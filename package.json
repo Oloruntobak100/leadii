@@ -1,0 +1,14 @@
+{
+  "name": "leadii-workspace",
+  "private": true,
+  "description": "Run scripts from the repo root; apps live in subfolders.",
+  "scripts": {
+    "dev": "npm run dev --prefix leadii",
+    "dev:next": "npm run dev --prefix leadii",
+    "dev:app": "npm run dev --prefix app",
+    "dev:ui": "npm run dev --prefix app",
+    "dev:full": "npx --yes concurrently -n next,vite -c cyan,magenta \"npm run dev --prefix leadii\" \"npm run dev --prefix app\"",
+    "build": "npm run build --prefix leadii",
+    "build:app": "npm run build --prefix app"
+  }
+}

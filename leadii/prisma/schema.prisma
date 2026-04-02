@@ -1,0 +1,647 @@
+// Leadii - Database Schema
+// Multi-tenant AI Lead Generation Platform
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// USER & AUTHENTICATION
+// ============================================
+
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  name              String?
+  avatarUrl         String?
+  
+  // Tenant isolation
+  tenantId          String    @map("tenant_id")
+  
+  // Auth
+  emailVerified     DateTime? @map("email_verified")
+  password          String?   // Hashed, null for OAuth users
+  
+  // Relations
+  accounts          Account[]
+  sessions          Session[]
+  campaigns         Campaign[]
+  leads             Lead[]
+  enrichments       Enrichment[]
+  outreachMessages  OutreachMessage[]
+  creditBalance     CreditBalance?
+  creditTransactions CreditTransaction[]
+  subscription      Subscription?
+  invoices          Invoice[]
+  integrations      UserIntegration[]
+  
+  // Timestamps
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+  
+  // Indexes
+  @@index([tenantId])
+  @@index([email])
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String  @map("user_id")
+  type              String
+  provider          String
+  providerAccountId String  @map("provider_account_id")
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique @map("session_token")
+  userId       String   @map("user_id")
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ============================================
+// CAMPAIGNS
+// ============================================
+
+model Campaign {
+  id              String          @id @default(cuid())
+  tenantId        String          @map("tenant_id")
+  userId          String          @map("user_id")
+  
+  // Campaign Details
+  name            String
+  description     String?
+  status          CampaignStatus  @default(DRAFT)
+  
+  // Niche Definition
+  nicheType       NicheType       @map("niche_type")
+  industry        String?         // e.g., "Real Estate", "SaaS", "Healthcare"
+  location        String?         // e.g., "Miami, FL", "United States"
+  keywords        String[]        // Search keywords
+  
+  // Source Configuration
+  sources         DataSource[]    // GOOGLE, LINKEDIN, YELLOW_PAGES, etc.
+  
+  // Filters
+  minEmployees    Int?            @map("min_employees")
+  maxEmployees    Int?            @map("max_employees")
+  jobTitles       String[]        @map("job_titles")
+  
+  // Progress Tracking
+  totalLeadsFound Int             @default(0) @map("total_leads_found")
+  enrichedCount   Int             @default(0) @map("enriched_count")
+  contactedCount  Int             @default(0) @map("contacted_count")
+  respondedCount  Int             @default(0) @map("responded_count")
+  
+  // Relations
+  user            User            @relation(fields: [userId], references: [id])
+  leads           Lead[]
+  
+  // Timestamps
+  createdAt       DateTime        @default(now()) @map("created_at")
+  updatedAt       DateTime        @updatedAt @map("updated_at")
+  startedAt       DateTime?       @map("started_at")
+  completedAt     DateTime?       @map("completed_at")
+  
+  // Indexes
+  @@index([tenantId])
+  @@index([userId])
+  @@index([status])
+  @@map("campaigns")
+}
+
+// ============================================
+// LEADS
+// ============================================
+
+model Lead {
+  id                String          @id @default(cuid())
+  tenantId          String          @map("tenant_id")
+  userId            String          @map("user_id")
+  campaignId        String          @map("campaign_id")
+  
+  // Basic Info
+  firstName         String?         @map("first_name")
+  lastName          String?         @map("last_name")
+  fullName          String?         @map("full_name")
+  email             String?
+  phone             String?
+  mobile            String?
+  
+  // Company Info (B2B)
+  companyName       String?         @map("company_name")
+  companySize       String?         @map("company_size")
+  industry          String?
+  jobTitle          String?         @map("job_title")
+  seniority         String?
+  department        String?
+  
+  // Location
+  city              String?
+  state             String?
+  country           String?
+  zipCode           String?         @map("zip_code")
+  
+  // Online Presence
+  linkedInUrl       String?         @map("linkedin_url")
+  twitterUrl        String?         @map("twitter_url")
+  website           String?
+  
+  // Status
+  status            LeadStatus      @default(DISCOVERED)
+  qualityScore      Float?          @map("quality_score") // 0-100
+  
+  // Source
+  source            DataSource
+  sourceUrl         String?         @map("source_url")
+  discoveredAt      DateTime        @default(now()) @map("discovered_at")
+  
+  // Relations
+  user              User            @relation(fields: [userId], references: [id])
+  campaign          Campaign        @relation(fields: [campaignId], references: [id])
+  enrichment        Enrichment?
+  outreachMessages  OutreachMessage[]
+  
+  // Timestamps
+  createdAt         DateTime        @default(now()) @map("created_at")
+  updatedAt         DateTime        @updatedAt @map("updated_at")
+  
+  // Indexes
+  @@index([tenantId])
+  @@index([campaignId])
+  @@index([status])
+  @@index([email])
+  @@index([companyName])
+  @@unique([tenantId, email])
+  @@map("leads")
+}
+
+// ============================================
+// ENRICHMENT (AI-Generated Dossier)
+// ============================================
+
+model Enrichment {
+  id                    String              @id @default(cuid())
+  tenantId              String              @map("tenant_id")
+  userId                String              @map("user_id")
+  leadId                String              @unique @map("lead_id")
+  campaignId            String              @map("campaign_id")
+  
+  // Status
+  status                EnrichmentStatus    @default(PENDING)
+  
+  // AI Research Results
+  companyOverview       String?             @map("company_overview") @db.Text
+  recentNews            Json?               @map("recent_news") // Array of {title, url, date, summary}
+  socialActivity        Json?               @map("social_activity") // LinkedIn posts, tweets
+  
+  // Pain Points & Opportunities
+  painPoints            String[]            @map("pain_points")
+  opportunities         String[]            
+  triggerEvents         Json?               @map("trigger_events") // Funding, hiring, expansions
+  
+  // Personalization Data
+  personalizationHints  Json?               @map("personalization_hints")
+  conversationStarters  String[]            @map("conversation_starters")
+  
+  // AI-Generated Copy
+  suggestedSubject      String?             @map("suggested_subject")
+  suggestedBody         String?             @map("suggested_body") @db.Text
+  
+  // Research Metadata
+  researchQueries       String[]            @map("research_queries") // What was searched
+  sourcesUsed           Json?               @map("sources_used") // URLs with relevance scores
+  confidenceScore       Float?              @map("confidence_score") // 0-1
+  
+  // Cost Tracking
+  creditsUsed           Float               @default(2) @map("credits_used")
+  processingTimeMs      Int?                @map("processing_time_ms")
+  
+  // Relations
+  user                  User                @relation(fields: [userId], references: [id])
+  lead                  Lead                @relation(fields: [leadId], references: [id])
+  
+  // Timestamps
+  createdAt             DateTime            @default(now()) @map("created_at")
+  updatedAt             DateTime            @updatedAt @map("updated_at")
+  startedAt             DateTime?           @map("started_at")
+  completedAt           DateTime?           @map("completed_at")
+  
+  // Indexes
+  @@index([tenantId])
+  @@index([campaignId])
+  @@index([status])
+  @@map("enrichments")
+}
+
+// ============================================
+// OUTREACH
+// ============================================
+
+model OutreachMessage {
+  id              String              @id @default(cuid())
+  tenantId        String              @map("tenant_id")
+  userId          String              @map("user_id")
+  leadId          String              @map("lead_id")
+  campaignId      String?             @map("campaign_id")
+  templateId      String?             @map("template_id")
+  
+  // Message Content
+  channel         OutreachChannel
+  subject         String?
+  body            String              @db.Text
+  bodyPersonalized String?            @map("body_personalized") @db.Text
+  
+  // Status
+  status          MessageStatus       @default(QUEUED)
+  sentAt          DateTime?           @map("sent_at")
+  deliveredAt     DateTime?           @map("delivered_at")
+  readAt          DateTime?           @map("read_at")
+  respondedAt     DateTime?           @map("responded_at")
+  
+  // Response Tracking
+  responseContent String?             @map("response_content") @db.Text
+  responseType    ResponseType?       @map("response_type") // POSITIVE, NEGATIVE, NEUTRAL
+  
+  // External IDs
+  externalId      String?             @map("external_id") // Twilio message ID, etc.
+  
+  // Cost
+  creditsUsed     Float               @default(0.5) @map("credits_used")
+  
+  // Relations
+  user            User                @relation(fields: [userId], references: [id])
+  lead            Lead                @relation(fields: [leadId], references: [id])
+  template        MessageTemplate?    @relation(fields: [templateId], references: [id])
+  
+  // Timestamps
+  createdAt       DateTime            @default(now()) @map("created_at")
+  updatedAt       DateTime            @updatedAt @map("updated_at")
+  
+  // Indexes
+  @@index([tenantId])
+  @@index([leadId])
+  @@index([status])
+  @@index([channel])
+  @@map("outreach_messages")
+}
+
+model MessageTemplate {
+  id            String              @id @default(cuid())
+  tenantId      String              @map("tenant_id")
+  userId        String              @map("user_id")
+  
+  name          String
+  description   String?
+  channel       OutreachChannel
+  subject       String?
+  body          String              @db.Text
+  
+  // Variables like {{firstName}}, {{company}}, {{painPoint}}
+  variables     String[]
+  
+  // Usage
+  useCount      Int                 @default(0) @map("use_count")
+  
+  // Relations
+  messages      OutreachMessage[]
+  
+  // Timestamps
+  createdAt     DateTime            @default(now()) @map("created_at")
+  updatedAt     DateTime            @updatedAt @map("updated_at")
+  
+  @@index([tenantId])
+  @@map("message_templates")
+}
+
+// ============================================
+// CREDITS & BILLING
+// ============================================
+
+model CreditBalance {
+  id              String    @id @default(cuid())
+  tenantId        String    @map("tenant_id")
+  userId          String    @unique @map("user_id")
+  
+  balance         Float     @default(0)
+  lifetimeEarned  Float     @default(0) @map("lifetime_earned")
+  lifetimeSpent   Float     @default(0) @map("lifetime_spent")
+  
+  // Relations
+  user            User      @relation(fields: [userId], references: [id])
+  
+  // Timestamps
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  
+  @@index([tenantId])
+  @@map("credit_balances")
+}
+
+model CreditTransaction {
+  id              String              @id @default(cuid())
+  tenantId        String              @map("tenant_id")
+  userId          String              @map("user_id")
+  
+  // Transaction Details
+  type            TransactionType
+  amount          Float
+  balanceAfter    Float               @map("balance_after")
+  
+  // What was this for?
+  description     String
+  relatedEntityType String?           @map("related_entity_type") // LEAD, ENRICHMENT, OUTREACH
+  relatedEntityId String?             @map("related_entity_id")
+  
+  // For purchases
+  stripePaymentId String?             @map("stripe_payment_id")
+  
+  // Relations
+  user            User                @relation(fields: [userId], references: [id])
+  
+  // Timestamps
+  createdAt       DateTime            @default(now()) @map("created_at")
+  
+  // Indexes
+  @@index([tenantId])
+  @@index([userId])
+  @@index([type])
+  @@map("credit_transactions")
+}
+
+model CreditPackage {
+  id              String    @id @default(cuid())
+  
+  name            String
+  description     String?
+  creditAmount    Float     @map("credit_amount")
+  priceCents      Int       @map("price_cents") // USD cents
+  currency        String    @default("usd")
+  
+  // Stripe
+  stripePriceId   String    @map("stripe_price_id")
+  
+  // Features
+  isActive        Boolean   @default(true) @map("is_active")
+  isPopular       Boolean   @default(false) @map("is_popular")
+  sortOrder       Int       @default(0) @map("sort_order")
+  
+  // Timestamps
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  
+  @@map("credit_packages")
+}
+
+model Subscription {
+  id                  String              @id @default(cuid())
+  tenantId            String              @map("tenant_id")
+  userId              String              @unique @map("user_id")
+  
+  // Plan
+  plan                SubscriptionPlan
+  status              SubscriptionStatus
+  
+  // Billing
+  currentPeriodStart  DateTime            @map("current_period_start")
+  currentPeriodEnd    DateTime            @map("current_period_end")
+  cancelAtPeriodEnd   Boolean             @default(false) @map("cancel_at_period_end")
+  
+  // Stripe
+  stripeCustomerId    String              @map("stripe_customer_id")
+  stripeSubscriptionId String             @map("stripe_subscription_id")
+  stripePriceId       String              @map("stripe_price_id")
+  
+  // Plan Limits
+  monthlyCredits      Int                 @default(0) @map("monthly_credits")
+  maxCampaigns        Int                 @default(5) @map("max_campaigns")
+  maxLeadsPerCampaign Int                 @default(100) @map("max_leads_per_campaign")
+  
+  // Relations
+  user                User                @relation(fields: [userId], references: [id])
+  
+  // Timestamps
+  createdAt           DateTime            @default(now()) @map("created_at")
+  updatedAt           DateTime            @updatedAt @map("updated_at")
+  
+  @@index([tenantId])
+  @@index([stripeCustomerId])
+  @@map("subscriptions")
+}
+
+model Invoice {
+  id              String    @id @default(cuid())
+  tenantId        String    @map("tenant_id")
+  userId          String    @map("user_id")
+  
+  // Invoice Details
+  stripeInvoiceId String    @unique @map("stripe_invoice_id")
+  amountCents     Int       @map("amount_cents")
+  currency        String    @default("usd")
+  status          String    // paid, open, void, uncollectible
+  
+  // PDF
+  pdfUrl          String?   @map("pdf_url")
+  
+  // Period
+  periodStart     DateTime? @map("period_start")
+  periodEnd       DateTime? @map("period_end")
+  
+  // Relations
+  user            User      @relation(fields: [userId], references: [id])
+  
+  // Timestamps
+  createdAt       DateTime  @default(now()) @map("created_at")
+  
+  @@index([tenantId])
+  @@index([userId])
+  @@map("invoices")
+}
+
+// ============================================
+// INTEGRATIONS
+// ============================================
+
+model UserIntegration {
+  id              String            @id @default(cuid())
+  tenantId        String            @map("tenant_id")
+  userId          String            @map("user_id")
+  
+  provider        IntegrationProvider
+  
+  // OAuth Tokens
+  accessToken     String?           @map("access_token")
+  refreshToken    String?           @map("refresh_token")
+  expiresAt       DateTime?         @map("expires_at")
+  
+  // Provider-specific config
+  config          Json?
+  
+  // Status
+  isActive        Boolean           @default(true) @map("is_active")
+  lastSyncedAt    DateTime?         @map("last_synced_at")
+  
+  // Relations
+  user            User              @relation(fields: [userId], references: [id])
+  
+  // Timestamps
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+  
+  @@unique([userId, provider])
+  @@index([tenantId])
+  @@map("user_integrations")
+}
+
+// ============================================
+// ENUMS
+// ============================================
+
+enum CampaignStatus {
+  DRAFT
+  QUEUED
+  SCRAPING
+  SCRAPING_COMPLETED
+  ENRICHING
+  ENRICHMENT_COMPLETED
+  OUTREACH_READY
+  COMPLETED
+  PAUSED
+  FAILED
+}
+
+enum NicheType {
+  B2B
+  B2C
+}
+
+enum DataSource {
+  GOOGLE
+  LINKEDIN
+  YELLOW_PAGES
+  YELP
+  CRUNCHBASE
+  APOLLO
+  HUNTER
+  MANUAL_UPLOAD
+  API_INTEGRATION
+}
+
+enum LeadStatus {
+  DISCOVERED        // Initial state
+  VALIDATED         // Email/phone verified
+  ENRICHING         // AI research in progress
+  ENRICHED          // Dossier ready
+  QUEUED            // Ready for outreach
+  CONTACTED         // Message sent
+  RESPONDED         // Got a reply
+  CONVERTED         // Became a customer
+  DISQUALIFIED      // Not a fit
+  BOUNCED           // Email bounced
+  UNSUBSCRIBED      // Opted out
+}
+
+enum EnrichmentStatus {
+  PENDING
+  QUEUED
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+  PARTIAL
+}
+
+enum OutreachChannel {
+  WHATSAPP
+  SMS
+  EMAIL
+  LINKEDIN_DM
+  TWITTER_DM
+  INSTAGRAM_DM
+}
+
+enum MessageStatus {
+  QUEUED
+  SENDING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  BOUNCED
+  RESPONDED
+}
+
+enum ResponseType {
+  POSITIVE
+  NEGATIVE
+  NEUTRAL
+  AUTO_REPLY
+  OUT_OF_OFFICE
+}
+
+enum TransactionType {
+  PURCHASE        // Bought credits
+  SUBSCRIPTION    // Monthly credit grant
+  BONUS           // Promotional bonus
+  USAGE           // Spent on enrichment/outreach
+  REFUND          // Refunded credits
+  ADJUSTMENT      // Manual adjustment
+}
+
+enum SubscriptionPlan {
+  FREE
+  STARTER
+  PROFESSIONAL
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  INCOMPLETE
+  INCOMPLETE_EXPIRED
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  UNPAID
+  PAUSED
+}
+
+enum IntegrationProvider {
+  LINKEDIN
+  SALESFORCE
+  HUBSPOT
+  PIPEDRIVE
+  ZAPIER
+  MAKE
+  GOOGLE_SHEETS
+  SLACK
+}
