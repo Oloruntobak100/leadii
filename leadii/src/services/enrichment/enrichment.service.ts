@@ -30,9 +30,12 @@ export class EnrichmentService {
   private enrichmentQueue: Queue;
 
   constructor() {
+    // Non-empty placeholders allow `next build` / Vercel when env vars are unset; real calls still need keys at runtime.
     this.agent = createResearcherAgent({
-      perplexityApiKey: process.env.PERPLEXITY_API_KEY!,
-      openaiApiKey: process.env.OPENAI_API_KEY!,
+      perplexityApiKey:
+        process.env.PERPLEXITY_API_KEY || 'build-placeholder-perplexity',
+      openaiApiKey:
+        process.env.OPENAI_API_KEY || 'sk-build-placeholder-not-used-at-runtime',
       anthropicApiKey: process.env.ANTHROPIC_API_KEY,
       maxResearchTimeMs: 120000,
       minConfidenceThreshold: 0.5,

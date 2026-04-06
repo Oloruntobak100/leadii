@@ -458,10 +458,12 @@ export class ResearcherAgent {
     opportunities: string[];
     triggerEvents: TriggerEvent[];
   }> {
-    const model = this.anthropic || new ChatOpenAI({
-      apiKey: this.config.openaiApiKey,
-      modelName: 'gpt-4-turbo-preview',
-    });
+    const model =
+      this.anthropic ||
+      new ChatOpenAI({
+        openAIApiKey: this.config.openaiApiKey,
+        modelName: 'gpt-4-turbo-preview',
+      });
 
     const synthesisPrompt = PromptTemplate.fromTemplate(`
 You are an expert sales intelligence analyst. Synthesize the following research data into actionable insights.
