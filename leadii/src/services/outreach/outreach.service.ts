@@ -12,6 +12,13 @@ import { EmailAdapter } from './email.adapter';
 
 const prisma = new PrismaClient();
 
+function redisConfigured(): boolean {
+  return Boolean(
+    process.env.REDIS_URL ||
+      (process.env.REDIS_HOST && process.env.REDIS_HOST.length > 0)
+  );
+}
+
 interface SendMessageInput {
   leadId: string;
   userId: string;
@@ -37,21 +44,25 @@ interface BatchSendInput {
 
 export class OutreachService {
   private creditService: CreditService;
-  private outreachQueue: Queue;
+  private outreachQueue: Queue | null;
   private whatsappAdapter: WhatsAppAdapter;
   private smsAdapter: SMSAdapter;
   private emailAdapter: EmailAdapter;
 
   constructor() {
     this.creditService = new CreditService();
-    
-    this.outreachQueue = new Queue('outreach', {
-      connection: {
-        host: process.env.REDIS_HOST,
-        port: parseInt(process.env.REDIS_PORT || '6379'),
-        password: process.env.REDIS_PASSWORD,
-      },
-    });
+
+    this.outreachQueue = redisConfigured()
+      ? new Queue('outreach', {
+          connection: process.env.REDIS_URL
+            ? { url: process.env.REDIS_URL }
+            : {
+                host: process.env.REDIS_HOST!,
+                port: parseInt(process.env.REDIS_PORT || '6379', 10),
+                password: process.env.REDIS_PASSWORD,
+              },
+        })
+      : null;
 
     this.whatsappAdapter = new WhatsAppAdapter();
     this.smsAdapter = new SMSAdapter();
@@ -101,19 +112,20 @@ export class OutreachService {
       },
     });
 
-    // Queue for sending
-    await this.outreachQueue.add(
-      'send-message',
-      {
-        messageId: message.id,
-        leadId: input.leadId,
-        channel: input.channel,
-      },
-      {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 5000 },
-      }
-    );
+    if (this.outreachQueue) {
+      await this.outreachQueue.add(
+        'send-message',
+        {
+          messageId: message.id,
+          leadId: input.leadId,
+          channel: input.channel,
+        },
+        {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 5000 },
+        }
+      );
+    }
 
     return message;
   }
@@ -182,19 +194,20 @@ export class OutreachService {
           },
         });
 
-        // Queue for sending
-        await this.outreachQueue.add(
-          'send-message',
-          {
-            messageId: message.id,
-            leadId: lead.id,
-            channel: input.channel,
-          },
-          {
-            attempts: 3,
-            backoff: { type: 'exponential', delay: 5000 },
-          }
-        );
+        if (this.outreachQueue) {
+          await this.outreachQueue.add(
+            'send-message',
+            {
+              messageId: message.id,
+              leadId: lead.id,
+              channel: input.channel,
+            },
+            {
+              attempts: 3,
+              backoff: { type: 'exponential', delay: 5000 },
+            }
+          );
+        }
 
         return message;
       })

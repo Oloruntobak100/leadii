@@ -24,10 +24,17 @@ interface EnrichmentResult {
   creditsUsed: number;
 }
 
+function redisConfigured(): boolean {
+  return Boolean(
+    process.env.REDIS_URL ||
+      (process.env.REDIS_HOST && process.env.REDIS_HOST.length > 0)
+  );
+}
+
 export class EnrichmentService {
   private agent: ResearcherAgent;
   private creditService: CreditService;
-  private enrichmentQueue: Queue;
+  private enrichmentQueue: Queue | null;
 
   constructor() {
     // Non-empty placeholders allow `next build` / Vercel when env vars are unset; real calls still need keys at runtime.
@@ -43,14 +50,18 @@ export class EnrichmentService {
     });
 
     this.creditService = new CreditService();
-    
-    this.enrichmentQueue = new Queue('enrichment', {
-      connection: {
-        host: process.env.REDIS_HOST,
-        port: parseInt(process.env.REDIS_PORT || '6379'),
-        password: process.env.REDIS_PASSWORD,
-      },
-    });
+
+    this.enrichmentQueue = redisConfigured()
+      ? new Queue('enrichment', {
+          connection: process.env.REDIS_URL
+            ? { url: process.env.REDIS_URL }
+            : {
+                host: process.env.REDIS_HOST!,
+                port: parseInt(process.env.REDIS_PORT || '6379', 10),
+                password: process.env.REDIS_PASSWORD,
+              },
+        })
+      : null;
   }
 
   /**
@@ -95,25 +106,26 @@ export class EnrichmentService {
       )
     );
 
-    // Queue jobs
-    await Promise.all(
-      enrichments.map((enrichment) =>
-        this.enrichmentQueue.add(
-          'enrich-lead',
-          {
-            leadId: enrichment.leadId,
-            userId,
-            tenantId,
-            campaignId,
-            enrichmentId: enrichment.id,
-          },
-          {
-            attempts: 3,
-            backoff: { type: 'exponential', delay: 5000 },
-          }
+    if (this.enrichmentQueue) {
+      await Promise.all(
+        enrichments.map((enrichment) =>
+          this.enrichmentQueue!.add(
+            'enrich-lead',
+            {
+              leadId: enrichment.leadId,
+              userId,
+              tenantId,
+              campaignId,
+              enrichmentId: enrichment.id,
+            },
+            {
+              attempts: 3,
+              backoff: { type: 'exponential', delay: 5000 },
+            }
+          )
         )
-      )
-    );
+      );
+    }
 
     return { queued: leadIds.length, estimatedCredits };
   }
