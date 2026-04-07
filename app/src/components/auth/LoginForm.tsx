@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useForm } from 'react-hook-form';
+import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { motion } from 'framer-motion';
@@ -44,6 +44,7 @@ export function LoginForm() {
 
   const {
     register,
+    control,
     handleSubmit,
     formState: { errors },
   } = useForm<LoginFormData>({
@@ -234,12 +235,21 @@ export function LoginForm() {
           )}
         </div>
 
-        {/* Remember Me */}
+        {/* Remember Me — Radix Checkbox uses onCheckedChange, not register() */}
         <div className="flex items-center gap-3">
-          <Checkbox
-            id="rememberMe"
-            {...register('rememberMe')}
-            className="border-slate-600 data-[state=checked]:bg-cyan-500 data-[state=checked]:border-cyan-500"
+          <Controller
+            name="rememberMe"
+            control={control}
+            render={({ field }) => (
+              <Checkbox
+                id="rememberMe"
+                checked={field.value}
+                onCheckedChange={(c) => field.onChange(c === true)}
+                onBlur={field.onBlur}
+                ref={field.ref}
+                className="border-slate-600 data-[state=checked]:bg-cyan-500 data-[state=checked]:border-cyan-500"
+              />
+            )}
           />
           <Label htmlFor="rememberMe" className="text-sm text-slate-400 cursor-pointer">
             Remember me for 30 days

@@ -28,8 +28,6 @@ Thumbs.db
 # Vercel
 .vercel
 
-# Prisma (keep schema; ignore generated client cache if any)
-leadii/node_modules/.prisma/
 
 # Playwright / test artifacts
 test-results/

@@ -1,22 +1,30 @@
 /**
- * Outreach Service
- * Manages multi-channel outreach campaigns
+ * Multi-channel outreach — Supabase for persistence; no Redis/BullMQ.
+ * Sending is invoked directly (e.g. processMessage); scale-out can use Supabase queues or Edge Functions later.
  */
 
-import { PrismaClient, OutreachChannel, MessageStatus } from '@prisma/client';
-import { Queue } from 'bullmq';
+import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { CreditService, CREDIT_COSTS } from '../credits/credit.service';
 import { WhatsAppAdapter } from './whatsapp.adapter';
 import { SMSAdapter } from './sms.adapter';
 import { EmailAdapter } from './email.adapter';
 
-const prisma = new PrismaClient();
+export type OutreachChannel =
+  | 'WHATSAPP'
+  | 'SMS'
+  | 'EMAIL'
+  | 'LINKEDIN_DM'
+  | 'TWITTER_DM'
+  | 'INSTAGRAM_DM';
 
-function redisConfigured(): boolean {
-  return Boolean(
-    process.env.REDIS_URL ||
-      (process.env.REDIS_HOST && process.env.REDIS_HOST.length > 0)
-  );
+function requireAdmin() {
+  const db = getSupabaseAdmin();
+  if (!db) {
+    throw new Error(
+      'Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.'
+    );
+  }
+  return db;
 }
 
 interface SendMessageInput {
@@ -44,39 +52,21 @@ interface BatchSendInput {
 
 export class OutreachService {
   private creditService: CreditService;
-  private outreachQueue: Queue | null;
   private whatsappAdapter: WhatsAppAdapter;
   private smsAdapter: SMSAdapter;
   private emailAdapter: EmailAdapter;
 
   constructor() {
     this.creditService = new CreditService();
-
-    this.outreachQueue = redisConfigured()
-      ? new Queue('outreach', {
-          connection: process.env.REDIS_URL
-            ? { url: process.env.REDIS_URL }
-            : {
-                host: process.env.REDIS_HOST!,
-                port: parseInt(process.env.REDIS_PORT || '6379', 10),
-                password: process.env.REDIS_PASSWORD,
-              },
-        })
-      : null;
-
     this.whatsappAdapter = new WhatsAppAdapter();
     this.smsAdapter = new SMSAdapter();
     this.emailAdapter = new EmailAdapter();
   }
 
-  /**
-   * Send a single message
-   */
   async sendMessage(input: SendMessageInput) {
-    // Get credit cost for channel
+    const db = requireAdmin();
     const creditCost = this.getChannelCreditCost(input.channel);
 
-    // Check credits
     const hasCredits = await this.creditService.hasSufficientCredits(
       input.userId,
       creditCost
@@ -86,7 +76,6 @@ export class OutreachService {
       throw new Error('Insufficient credits');
     }
 
-    // Deduct credits
     await this.creditService.deductCredits({
       userId: input.userId,
       tenantId: input.tenantId,
@@ -96,48 +85,32 @@ export class OutreachService {
       relatedEntityId: input.leadId,
     });
 
-    // Create message record
-    const message = await prisma.outreachMessage.create({
-      data: {
-        userId: input.userId,
-        tenantId: input.tenantId,
-        leadId: input.leadId,
-        campaignId: input.campaignId,
-        templateId: input.templateId,
+    const { data: message, error } = await db
+      .from('outreach_messages')
+      .insert({
+        user_id: input.userId,
+        tenant_id: input.tenantId,
+        lead_id: input.leadId,
+        campaign_id: input.campaignId ?? null,
+        template_id: input.templateId ?? null,
         channel: input.channel,
-        subject: input.subject,
+        subject: input.subject ?? null,
         body: input.body,
         status: 'QUEUED',
-        creditsUsed: creditCost,
-      },
-    });
+        credits_used: creditCost,
+      })
+      .select()
+      .single();
 
-    if (this.outreachQueue) {
-      await this.outreachQueue.add(
-        'send-message',
-        {
-          messageId: message.id,
-          leadId: input.leadId,
-          channel: input.channel,
-        },
-        {
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 5000 },
-        }
-      );
-    }
-
+    if (error) throw error;
     return message;
   }
 
-  /**
-   * Send messages in batch
-   */
   async sendBatch(input: BatchSendInput) {
+    const db = requireAdmin();
     const creditCost = this.getChannelCreditCost(input.channel);
     const totalCost = creditCost * input.leadIds.length;
 
-    // Check credits
     const hasCredits = await this.creditService.hasSufficientCredits(
       input.userId,
       totalCost
@@ -147,78 +120,85 @@ export class OutreachService {
       throw new Error(`Insufficient credits. Required: ${totalCost}`);
     }
 
-    // Get leads
-    const leads = await prisma.lead.findMany({
-      where: {
-        id: { in: input.leadIds },
+    const { data: leads, error: leadsErr } = await db
+      .from('leads')
+      .select('id, first_name, last_name, company_name, email, phone, mobile')
+      .in('id', input.leadIds)
+      .eq('user_id', input.userId);
+
+    if (leadsErr) throw leadsErr;
+
+    const enrichmentByLead = new Map<string, Record<string, unknown>>();
+    if (input.personalize && leads?.length) {
+      const { data: enrichments } = await db
+        .from('enrichments')
+        .select('*')
+        .in(
+          'lead_id',
+          leads.map((l) => l.id as string)
+        );
+      for (const e of enrichments ?? []) {
+        enrichmentByLead.set(e.lead_id as string, e as Record<string, unknown>);
+      }
+    }
+
+    const messages: Record<string, unknown>[] = [];
+
+    for (const lead of leads ?? []) {
+      const lid = lead.id as string;
+      let bodyText = input.body;
+      const enr = enrichmentByLead.get(lid);
+      if (input.personalize && enr) {
+        bodyText = this.personalizeMessage(input.body, lead, enr);
+      }
+
+      await this.creditService.deductCredits({
         userId: input.userId,
-      },
-      include: {
-        enrichment: true,
-      },
-    });
-
-    // Create messages and queue
-    const messages = await Promise.all(
-      leads.map(async (lead) => {
-        // Personalize message if enrichment exists
-        let body = input.body;
-        if (input.personalize && lead.enrichment) {
-          body = this.personalizeMessage(input.body, lead, lead.enrichment);
-        }
-
-        // Deduct credits
-        await this.creditService.deductCredits({
-          userId: input.userId,
-          tenantId: input.tenantId,
-          amount: creditCost,
-          description: `${input.channel} message to lead ${lead.id}`,
-          relatedEntityType: 'OUTREACH',
-          relatedEntityId: lead.id,
-        });
-
-        // Create message
-        const message = await prisma.outreachMessage.create({
-          data: {
-            userId: input.userId,
-            tenantId: input.tenantId,
-            leadId: lead.id,
-            campaignId: input.campaignId,
-            templateId: input.templateId,
-            channel: input.channel,
-            subject: input.subject,
-            body: input.body,
-            bodyPersonalized: body,
-            status: 'QUEUED',
-            creditsUsed: creditCost,
-          },
-        });
-
-        if (this.outreachQueue) {
-          await this.outreachQueue.add(
-            'send-message',
-            {
-              messageId: message.id,
-              leadId: lead.id,
-              channel: input.channel,
-            },
-            {
-              attempts: 3,
-              backoff: { type: 'exponential', delay: 5000 },
-            }
-          );
-        }
-
-        return message;
-      })
-    );
-
-    // Update campaign contacted count
-    if (input.campaignId) {
-      await prisma.campaign.update({
-        where: { id: input.campaignId },
-        data: { contactedCount: { increment: messages.length } },
+        tenantId: input.tenantId,
+        amount: creditCost,
+        description: `${input.channel} message to lead ${lid}`,
+        relatedEntityType: 'OUTREACH',
+        relatedEntityId: lid,
       });
+
+      const { data: msg, error: insErr } = await db
+        .from('outreach_messages')
+        .insert({
+          user_id: input.userId,
+          tenant_id: input.tenantId,
+          lead_id: lid,
+          campaign_id: input.campaignId ?? null,
+          template_id: input.templateId ?? null,
+          channel: input.channel,
+          subject: input.subject ?? null,
+          body: input.body,
+          body_personalized: bodyText,
+          status: 'QUEUED',
+          credits_used: creditCost,
+        })
+        .select()
+        .single();
+
+      if (insErr) throw insErr;
+      messages.push(msg);
+    }
+
+    if (input.campaignId && messages.length > 0) {
+      const { data: camp } = await db
+        .from('campaigns')
+        .select('contacted_count')
+        .eq('id', input.campaignId)
+        .single();
+
+      if (camp) {
+        await db
+          .from('campaigns')
+          .update({
+            contacted_count: Number(camp.contacted_count ?? 0) + messages.length,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', input.campaignId);
+      }
     }
 
     return {
@@ -228,90 +208,99 @@ export class OutreachService {
     };
   }
 
-  /**
-   * Process a queued message (called by worker)
-   */
   async processMessage(messageId: string): Promise<boolean> {
-    const message = await prisma.outreachMessage.findUnique({
-      where: { id: messageId },
-      include: { lead: true },
-    });
+    const db = requireAdmin();
 
-    if (!message || !message.lead) {
-      throw new Error('Message or lead not found');
+    const { data: message, error: msgErr } = await db
+      .from('outreach_messages')
+      .select('*')
+      .eq('id', messageId)
+      .single();
+
+    if (msgErr || !message) {
+      throw new Error('Message not found');
     }
 
-    // Update status to sending
-    await prisma.outreachMessage.update({
-      where: { id: messageId },
-      data: { status: 'SENDING' },
-    });
+    const { data: lead, error: leadErr } = await db
+      .from('leads')
+      .select('*')
+      .eq('id', message.lead_id as string)
+      .single();
+
+    if (leadErr || !lead) {
+      throw new Error('Lead not found');
+    }
+
+    await db
+      .from('outreach_messages')
+      .update({ status: 'SENDING', updated_at: new Date().toISOString() })
+      .eq('id', messageId);
 
     try {
       let result: { success: boolean; externalId?: string; error?: string };
+      const channel = message.channel as OutreachChannel;
+      const personalized =
+        (message.body_personalized as string) || (message.body as string);
 
-      switch (message.channel) {
+      switch (channel) {
         case 'WHATSAPP':
           result = await this.whatsappAdapter.send({
-            to: message.lead.mobile || message.lead.phone!,
-            body: message.bodyPersonalized || message.body,
+            to: (lead.mobile as string) || (lead.phone as string)!,
+            body: personalized,
           });
           break;
 
         case 'SMS':
           result = await this.smsAdapter.send({
-            to: message.lead.mobile || message.lead.phone!,
-            body: message.bodyPersonalized || message.body,
+            to: (lead.mobile as string) || (lead.phone as string)!,
+            body: personalized,
           });
           break;
 
         case 'EMAIL':
           result = await this.emailAdapter.send({
-            to: message.lead.email!,
-            subject: message.subject!,
-            body: message.bodyPersonalized || message.body,
+            to: lead.email as string,
+            subject: (message.subject as string)!,
+            body: personalized,
           });
           break;
 
         default:
-          throw new Error(`Unsupported channel: ${message.channel}`);
+          throw new Error(`Unsupported channel: ${channel}`);
       }
 
       if (result.success) {
-        await prisma.outreachMessage.update({
-          where: { id: messageId },
-          data: {
+        await db
+          .from('outreach_messages')
+          .update({
             status: 'SENT',
-            externalId: result.externalId,
-            sentAt: new Date(),
-          },
-        });
+            external_id: result.externalId ?? null,
+            sent_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', messageId);
 
-        // Update lead status
-        await prisma.lead.update({
-          where: { id: message.leadId },
-          data: { status: 'CONTACTED' },
-        });
+        await db
+          .from('leads')
+          .update({ status: 'CONTACTED', updated_at: new Date().toISOString() })
+          .eq('id', message.lead_id as string);
 
         return true;
-      } else {
-        throw new Error(result.error || 'Send failed');
       }
+
+      throw new Error(result.error || 'Send failed');
     } catch (error) {
       console.error('Outreach send failed:', error);
 
-      await prisma.outreachMessage.update({
-        where: { id: messageId },
-        data: {
-          status: 'FAILED',
-        },
-      });
+      await db
+        .from('outreach_messages')
+        .update({ status: 'FAILED', updated_at: new Date().toISOString() })
+        .eq('id', messageId);
 
-      // Refund credits on failure
       await this.creditService.refundCredits({
-        userId: message.userId,
-        tenantId: message.tenantId,
-        amount: message.creditsUsed,
+        userId: message.user_id as string,
+        tenantId: message.tenant_id as string,
+        amount: Number(message.credits_used),
         description: `Refund for failed ${message.channel} message`,
       });
 
@@ -319,28 +308,31 @@ export class OutreachService {
     }
   }
 
-  /**
-   * Get message statistics
-   */
   async getMessageStats(userId: string, days: number = 30) {
+    const db = requireAdmin();
     const since = new Date();
     since.setDate(since.getDate() - days);
 
-    const stats = await prisma.outreachMessage.groupBy({
-      by: ['channel', 'status'],
-      where: {
-        userId,
-        createdAt: { gte: since },
-      },
-      _count: true,
-    });
+    const { data: rows, error } = await db
+      .from('outreach_messages')
+      .select('channel, status')
+      .eq('user_id', userId)
+      .gte('created_at', since.toISOString());
 
-    return stats;
+    if (error) throw error;
+
+    const map = new Map<string, number>();
+    for (const r of rows ?? []) {
+      const key = `${r.channel}:${r.status}`;
+      map.set(key, (map.get(key) ?? 0) + 1);
+    }
+
+    return Array.from(map.entries()).map(([key, _count]) => {
+      const [channel, status] = key.split(':');
+      return { channel, status, _count };
+    });
   }
 
-  /**
-   * Get credit cost for channel
-   */
   private getChannelCreditCost(channel: OutreachChannel): number {
     switch (channel) {
       case 'WHATSAPP':
@@ -356,37 +348,25 @@ export class OutreachService {
     }
   }
 
-  /**
-   * Personalize message with enrichment data
-   */
   private personalizeMessage(
     template: string,
-    lead: any,
-    enrichment: any
+    lead: Record<string, unknown>,
+    enrichment: Record<string, unknown>
   ): string {
     let message = template;
 
-    // Basic replacements
-    message = message.replace(/\{\{firstName\}\}/g, lead.firstName || '');
-    message = message.replace(/\{\{lastName\}\}/g, lead.lastName || '');
-    message = message.replace(/\{\{company\}\}/g, lead.companyName || '');
-    message = message.replace(/\{\{jobTitle\}\}/g, lead.jobTitle || '');
+    message = message.replace(/\{\{firstName\}\}/g, (lead.first_name as string) || '');
+    message = message.replace(/\{\{lastName\}\}/g, (lead.last_name as string) || '');
+    message = message.replace(/\{\{company\}\}/g, (lead.company_name as string) || '');
+    message = message.replace(/\{\{jobTitle\}\}/g, (lead.job_title as string) || '');
 
-    // Enrichment-based replacements
-    if (enrichment) {
-      message = message.replace(
-        /\{\{painPoint\}\}/g,
-        enrichment.painPoints?.[0] || ''
-      );
-      message = message.replace(
-        /\{\{opportunity\}\}/g,
-        enrichment.opportunities?.[0] || ''
-      );
-      message = message.replace(
-        /\{\{conversationStarter\}\}/g,
-        enrichment.conversationStarters?.[0] || ''
-      );
-    }
+    const painPoints = enrichment.pain_points as string[] | undefined;
+    const opportunities = enrichment.opportunities as string[] | undefined;
+    const starters = enrichment.conversation_starters as string[] | undefined;
+
+    message = message.replace(/\{\{painPoint\}\}/g, painPoints?.[0] || '');
+    message = message.replace(/\{\{opportunity\}\}/g, opportunities?.[0] || '');
+    message = message.replace(/\{\{conversationStarter\}\}/g, starters?.[0] || '');
 
     return message;
   }

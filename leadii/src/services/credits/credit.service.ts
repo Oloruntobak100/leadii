@@ -1,11 +1,17 @@
 /**
- * Credit Service
- * Manages the credit ledger system for Leadii
+ * Credit ledger — backed by Supabase (credit_balances, credit_transactions).
  */
 
-import { PrismaClient, TransactionType } from '@prisma/client';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { getSupabaseAdmin } from '@/lib/supabase/admin';
 
-const prisma = new PrismaClient();
+export type CreditTransactionType =
+  | 'PURCHASE'
+  | 'SUBSCRIPTION'
+  | 'BONUS'
+  | 'USAGE'
+  | 'REFUND'
+  | 'ADJUSTMENT';
 
 interface CreditTransactionInput {
   userId: string;
@@ -17,156 +23,208 @@ interface CreditTransactionInput {
   stripePaymentId?: string;
 }
 
-interface CreditPackage {
+export interface CreditPackage {
   id: string;
   name: string;
   creditAmount: number;
   priceCents: number;
 }
 
-export class CreditService {
-  /**
-   * Get user's current credit balance
-   */
-  async getBalance(userId: string) {
-    const balance = await prisma.creditBalance.findUnique({
-      where: { userId },
-    });
+function requireAdmin() {
+  const db = getSupabaseAdmin();
+  if (!db) {
+    throw new Error(
+      'Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.'
+    );
+  }
+  return db;
+}
 
-    if (!balance) {
-      // Create initial balance
-      return prisma.creditBalance.create({
-        data: {
-          userId,
-          tenantId: userId, // Simplified - would come from auth context
-          balance: 0,
-          lifetimeEarned: 0,
-          lifetimeSpent: 0,
-        },
-      });
+export class CreditService {
+  async getBalance(userId: string) {
+    const db = requireAdmin();
+
+    const { data: existing, error: selErr } = await db
+      .from('credit_balances')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (selErr) throw selErr;
+    if (existing) return this.mapBalance(existing);
+
+    const { data: profile, error: pErr } = await db
+      .from('profiles')
+      .select('tenant_id')
+      .eq('id', userId)
+      .single();
+
+    if (pErr || !profile?.tenant_id) {
+      throw new Error('Profile not found for user');
     }
 
-    return balance;
+    const { data: created, error: insErr } = await db
+      .from('credit_balances')
+      .insert({
+        user_id: userId,
+        tenant_id: profile.tenant_id,
+        balance: 0,
+        lifetime_earned: 0,
+        lifetime_spent: 0,
+      })
+      .select()
+      .single();
+
+    if (insErr) throw insErr;
+    return this.mapBalance(created);
   }
 
-  /**
-   * Check if user has sufficient credits
-   */
+  private mapBalance(row: Record<string, unknown>) {
+    return {
+      id: row.id as string,
+      userId: row.user_id as string,
+      tenantId: row.tenant_id as string,
+      balance: Number(row.balance ?? 0),
+      lifetimeEarned: Number(row.lifetime_earned ?? 0),
+      lifetimeSpent: Number(row.lifetime_spent ?? 0),
+    };
+  }
+
   async hasSufficientCredits(userId: string, requiredAmount: number): Promise<boolean> {
     const balance = await this.getBalance(userId);
     return balance.balance >= requiredAmount;
   }
 
-  /**
-   * Add credits to user account (purchase, bonus, subscription)
-   */
-  async addCredits(
-    input: CreditTransactionInput,
-    type: TransactionType
-  ) {
-    return prisma.$transaction(async (tx) => {
-      // Get or create balance
-      let balance = await tx.creditBalance.findUnique({
-        where: { userId: input.userId },
-      });
+  async addCredits(input: CreditTransactionInput, type: CreditTransactionType) {
+    const db = requireAdmin();
+    const balanceRow = await this.getBalanceRow(db, input.userId, input.tenantId);
+    const newBalance = Number(balanceRow.balance) + input.amount;
 
-      if (!balance) {
-        balance = await tx.creditBalance.create({
-          data: {
-            userId: input.userId,
-            tenantId: input.tenantId,
-            balance: 0,
-            lifetimeEarned: 0,
-            lifetimeSpent: 0,
-          },
-        });
-      }
+    const { error: upErr } = await db
+      .from('credit_balances')
+      .update({
+        balance: newBalance,
+        ...(type === 'PURCHASE' || type === 'SUBSCRIPTION' || type === 'BONUS'
+          ? { lifetime_earned: Number(balanceRow.lifetime_earned) + input.amount }
+          : {}),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('user_id', input.userId);
 
-      const newBalance = balance.balance + input.amount;
+    if (upErr) throw upErr;
 
-      // Update balance
-      await tx.creditBalance.update({
-        where: { userId: input.userId },
-        data: {
-          balance: newBalance,
-          lifetimeEarned:
-            type === 'PURCHASE' || type === 'SUBSCRIPTION' || type === 'BONUS'
-              ? { increment: input.amount }
-              : undefined,
-        },
-      });
+    const { data: tx, error: txErr } = await db
+      .from('credit_transactions')
+      .insert({
+        user_id: input.userId,
+        tenant_id: input.tenantId,
+        type,
+        amount: input.amount,
+        balance_after: newBalance,
+        description: input.description,
+        related_entity_type: input.relatedEntityType ?? null,
+        related_entity_id: input.relatedEntityId ?? null,
+        stripe_payment_id: input.stripePaymentId ?? null,
+      })
+      .select()
+      .single();
 
-      // Create transaction record
-      const transaction = await tx.creditTransaction.create({
-        data: {
-          userId: input.userId,
-          tenantId: input.tenantId,
-          type,
-          amount: input.amount,
-          balanceAfter: newBalance,
-          description: input.description,
-          relatedEntityType: input.relatedEntityType,
-          relatedEntityId: input.relatedEntityId,
-          stripePaymentId: input.stripePaymentId,
-        },
-      });
+    if (txErr) throw txErr;
 
-      return { balance: newBalance, transaction };
-    });
+    return {
+      balance: newBalance,
+      transaction: this.mapTransaction(tx),
+    };
   }
 
-  /**
-   * Deduct credits for usage
-   */
   async deductCredits(input: CreditTransactionInput) {
-    return prisma.$transaction(async (tx) => {
-      const balance = await tx.creditBalance.findUnique({
-        where: { userId: input.userId },
-      });
+    const db = requireAdmin();
+    const balanceRow = await this.getBalanceRow(db, input.userId, input.tenantId);
+    const current = Number(balanceRow.balance);
 
-      if (!balance || balance.balance < input.amount) {
-        throw new Error('Insufficient credits');
-      }
+    if (current < input.amount) {
+      throw new Error('Insufficient credits');
+    }
 
-      const newBalance = balance.balance - input.amount;
+    const newBalance = current - input.amount;
 
-      // Update balance
-      await tx.creditBalance.update({
-        where: { userId: input.userId },
-        data: {
-          balance: newBalance,
-          lifetimeSpent: { increment: input.amount },
-        },
-      });
+    const { error: upErr } = await db
+      .from('credit_balances')
+      .update({
+        balance: newBalance,
+        lifetime_spent: Number(balanceRow.lifetime_spent) + input.amount,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('user_id', input.userId);
 
-      // Create transaction record
-      const transaction = await tx.creditTransaction.create({
-        data: {
-          userId: input.userId,
-          tenantId: input.tenantId,
-          type: 'USAGE',
-          amount: -input.amount,
-          balanceAfter: newBalance,
-          description: input.description,
-          relatedEntityType: input.relatedEntityType,
-          relatedEntityId: input.relatedEntityId,
-        },
-      });
+    if (upErr) throw upErr;
 
-      return { balance: newBalance, transaction };
-    });
+    const { data: tx, error: txErr } = await db
+      .from('credit_transactions')
+      .insert({
+        user_id: input.userId,
+        tenant_id: input.tenantId,
+        type: 'USAGE',
+        amount: -input.amount,
+        balance_after: newBalance,
+        description: input.description,
+        related_entity_type: input.relatedEntityType ?? null,
+        related_entity_id: input.relatedEntityId ?? null,
+      })
+      .select()
+      .single();
+
+    if (txErr) throw txErr;
+
+    return { balance: newBalance, transaction: this.mapTransaction(tx) };
   }
 
-  /**
-   * Refund credits (e.g., for failed operations)
-   */
+  private async getBalanceRow(db: SupabaseClient, userId: string, tenantId: string) {
+    const { data, error } = await db
+      .from('credit_balances')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (data) return data;
+
+    const { data: created, error: insErr } = await db
+      .from('credit_balances')
+      .insert({
+        user_id: userId,
+        tenant_id: tenantId,
+        balance: 0,
+        lifetime_earned: 0,
+        lifetime_spent: 0,
+      })
+      .select()
+      .single();
+
+    if (insErr) throw insErr;
+    return created;
+  }
+
+  private mapTransaction(row: Record<string, unknown>) {
+    return {
+      id: row.id as string,
+      userId: row.user_id as string,
+      tenantId: row.tenant_id as string,
+      type: row.type as CreditTransactionType,
+      amount: Number(row.amount),
+      balanceAfter: Number(row.balance_after),
+      description: row.description as string,
+      relatedEntityType: row.related_entity_type as string | null,
+      relatedEntityId: row.related_entity_id as string | null,
+      stripePaymentId: row.stripe_payment_id as string | null,
+      createdAt: row.created_at as string,
+    };
+  }
+
   async refundCredits(input: CreditTransactionInput) {
     return this.addCredits(input, 'REFUND');
   }
 
-  /**
-   * Grant subscription credits (monthly reset)
-   */
   async grantSubscriptionCredits(
     userId: string,
     tenantId: string,
@@ -186,104 +244,102 @@ export class CreditService {
     );
   }
 
-  /**
-   * Get transaction history
-   */
   async getTransactionHistory(userId: string, limit: number = 50) {
-    return prisma.creditTransaction.findMany({
-      where: { userId },
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-    });
+    const db = requireAdmin();
+    const { data, error } = await db
+      .from('credit_transactions')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (error) throw error;
+    return (data ?? []).map((row) => this.mapTransaction(row));
   }
 
-  /**
-   * Get credit packages for purchase
-   */
   async getCreditPackages(): Promise<CreditPackage[]> {
-    return prisma.creditPackage.findMany({
-      where: { isActive: true },
-      orderBy: { sortOrder: 'asc' },
-    });
+    const db = requireAdmin();
+    const { data, error } = await db
+      .from('credit_packages')
+      .select('id, name, credit_amount, price_cents')
+      .eq('is_active', true)
+      .order('sort_order', { ascending: true });
+
+    if (error) throw error;
+    return (data ?? []).map((row) => ({
+      id: row.id as string,
+      name: row.name as string,
+      creditAmount: Number(row.credit_amount),
+      priceCents: row.price_cents as number,
+    }));
   }
 
-  /**
-   * Purchase credits via Stripe
-   */
   async purchaseCredits(
     userId: string,
     tenantId: string,
     packageId: string,
     stripePaymentId: string
   ) {
-    const creditPackage = await prisma.creditPackage.findUnique({
-      where: { id: packageId },
-    });
+    const db = requireAdmin();
+    const { data: pkg, error } = await db
+      .from('credit_packages')
+      .select('id, name, credit_amount')
+      .eq('id', packageId)
+      .single();
 
-    if (!creditPackage) {
-      throw new Error('Credit package not found');
-    }
+    if (error || !pkg) throw new Error('Credit package not found');
 
     return this.addCredits(
       {
         userId,
         tenantId,
-        amount: creditPackage.creditAmount,
-        description: `Purchased ${creditPackage.name}`,
+        amount: Number(pkg.credit_amount),
+        description: `Purchased ${pkg.name}`,
         stripePaymentId,
       },
       'PURCHASE'
     );
   }
 
-  /**
-   * Get usage statistics
-   */
   async getUsageStats(userId: string, days: number = 30) {
+    const db = requireAdmin();
     const since = new Date();
     since.setDate(since.getDate() - days);
+    const sinceIso = since.toISOString();
 
-    const [purchases, usage, byType] = await Promise.all([
-      prisma.creditTransaction.aggregate({
-        where: {
-          userId,
-          type: { in: ['PURCHASE', 'SUBSCRIPTION', 'BONUS'] },
-          createdAt: { gte: since },
-        },
-        _sum: { amount: true },
-      }),
-      prisma.creditTransaction.aggregate({
-        where: {
-          userId,
-          type: 'USAGE',
-          createdAt: { gte: since },
-        },
-        _sum: { amount: true },
-      }),
-      prisma.creditTransaction.groupBy({
-        by: ['relatedEntityType'],
-        where: {
-          userId,
-          type: 'USAGE',
-          createdAt: { gte: since },
-        },
-        _sum: { amount: true },
-      }),
-    ]);
+    const { data: txs, error } = await db
+      .from('credit_transactions')
+      .select('type, amount, related_entity_type')
+      .eq('user_id', userId)
+      .gte('created_at', sinceIso);
+
+    if (error) throw error;
+
+    let creditsAdded = 0;
+    let creditsUsed = 0;
+    const byType = new Map<string, number>();
+
+    for (const row of txs ?? []) {
+      const t = row.type as string;
+      const amt = Number(row.amount);
+      if (t === 'PURCHASE' || t === 'SUBSCRIPTION' || t === 'BONUS') {
+        creditsAdded += amt;
+      } else if (t === 'USAGE') {
+        creditsUsed += Math.abs(amt);
+        const key = (row.related_entity_type as string) || 'OTHER';
+        byType.set(key, (byType.get(key) ?? 0) + Math.abs(amt));
+      }
+    }
 
     return {
       period: days,
-      creditsAdded: purchases._sum.amount || 0,
-      creditsUsed: Math.abs(usage._sum.amount || 0),
-      usageByType: byType.map((item) => ({
-        type: item.relatedEntityType || 'OTHER',
-        amount: Math.abs(item._sum.amount || 0),
-      })),
+      creditsAdded,
+      creditsUsed,
+      usageByType: Array.from(byType.entries()).map(([type, amount]) => ({ type, amount })),
     };
   }
 }
 
-// Cost matrix for operations
 export const CREDIT_COSTS = {
   SCRAPE_LEAD: 0.1,
   DEEP_ENRICHMENT: 2.0,

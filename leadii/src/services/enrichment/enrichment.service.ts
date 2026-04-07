@@ -1,14 +1,11 @@
 /**
- * Enrichment Service
- * Orchestrates the enrichment workflow and manages the Researcher Agent
+ * Enrichment workflow — Supabase for persistence; no Redis/BullMQ.
+ * Jobs are recorded as rows; async processing can be added later (Edge Functions, etc.).
  */
 
-import { PrismaClient } from '@prisma/client';
-import { Queue } from 'bullmq';
+import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { createResearcherAgent, ResearcherAgent } from './researcher.agent';
 import { CreditService } from '../credits/credit.service';
-
-const prisma = new PrismaClient();
 
 interface EnrichmentJob {
   leadId: string;
@@ -24,20 +21,21 @@ interface EnrichmentResult {
   creditsUsed: number;
 }
 
-function redisConfigured(): boolean {
-  return Boolean(
-    process.env.REDIS_URL ||
-      (process.env.REDIS_HOST && process.env.REDIS_HOST.length > 0)
-  );
+function requireAdmin() {
+  const db = getSupabaseAdmin();
+  if (!db) {
+    throw new Error(
+      'Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.'
+    );
+  }
+  return db;
 }
 
 export class EnrichmentService {
   private agent: ResearcherAgent;
   private creditService: CreditService;
-  private enrichmentQueue: Queue | null;
 
   constructor() {
-    // Non-empty placeholders allow `next build` / Vercel when env vars are unset; real calls still need keys at runtime.
     this.agent = createResearcherAgent({
       perplexityApiKey:
         process.env.PERPLEXITY_API_KEY || 'build-placeholder-perplexity',
@@ -50,31 +48,16 @@ export class EnrichmentService {
     });
 
     this.creditService = new CreditService();
-
-    this.enrichmentQueue = redisConfigured()
-      ? new Queue('enrichment', {
-          connection: process.env.REDIS_URL
-            ? { url: process.env.REDIS_URL }
-            : {
-                host: process.env.REDIS_HOST!,
-                port: parseInt(process.env.REDIS_PORT || '6379', 10),
-                password: process.env.REDIS_PASSWORD,
-              },
-        })
-      : null;
   }
 
-  /**
-   * Queue leads for enrichment
-   */
   async queueEnrichment(
     campaignId: string,
     leadIds: string[],
     userId: string,
     tenantId: string
   ): Promise<{ queued: number; estimatedCredits: number }> {
-    // Check if user has enough credits
-    const estimatedCredits = leadIds.length * 2; // 2 credits per enrichment
+    const db = requireAdmin();
+    const estimatedCredits = leadIds.length * 2;
     const hasCredits = await this.creditService.hasSufficientCredits(
       userId,
       estimatedCredits
@@ -84,60 +67,35 @@ export class EnrichmentService {
       throw new Error('Insufficient credits for enrichment');
     }
 
-    // Update lead statuses
-    await prisma.lead.updateMany({
-      where: { id: { in: leadIds } },
-      data: { status: 'ENRICHING' },
-    });
+    const { error: leadErr } = await db
+      .from('leads')
+      .update({ status: 'ENRICHING', updated_at: new Date().toISOString() })
+      .in('id', leadIds)
+      .eq('tenant_id', tenantId)
+      .eq('user_id', userId);
 
-    // Create enrichment records
-    const enrichments = await Promise.all(
-      leadIds.map((leadId) =>
-        prisma.enrichment.create({
-          data: {
-            leadId,
-            userId,
-            tenantId,
-            campaignId,
-            status: 'QUEUED',
-            creditsUsed: 2,
-          },
-        })
-      )
-    );
+    if (leadErr) throw leadErr;
 
-    if (this.enrichmentQueue) {
-      await Promise.all(
-        enrichments.map((enrichment) =>
-          this.enrichmentQueue!.add(
-            'enrich-lead',
-            {
-              leadId: enrichment.leadId,
-              userId,
-              tenantId,
-              campaignId,
-              enrichmentId: enrichment.id,
-            },
-            {
-              attempts: 3,
-              backoff: { type: 'exponential', delay: 5000 },
-            }
-          )
-        )
-      );
-    }
+    const rows = leadIds.map((leadId) => ({
+      lead_id: leadId,
+      user_id: userId,
+      tenant_id: tenantId,
+      campaign_id: campaignId,
+      status: 'QUEUED' as const,
+      credits_used: 2,
+    }));
+
+    const { error: insErr } = await db.from('enrichments').insert(rows);
+    if (insErr) throw insErr;
 
     return { queued: leadIds.length, estimatedCredits };
   }
 
-  /**
-   * Process a single enrichment job
-   */
   async processEnrichment(job: EnrichmentJob): Promise<EnrichmentResult> {
+    const db = requireAdmin();
     const startTime = Date.now();
 
     try {
-      // Deduct credits first
       await this.creditService.deductCredits({
         userId: job.userId,
         tenantId: job.tenantId,
@@ -147,92 +105,110 @@ export class EnrichmentService {
         relatedEntityId: job.leadId,
       });
 
-      // Fetch lead data
-      const lead = await prisma.lead.findUnique({
-        where: { id: job.leadId },
-      });
+      const { data: lead, error: leadErr } = await db
+        .from('leads')
+        .select('*')
+        .eq('id', job.leadId)
+        .single();
 
-      if (!lead) {
+      if (leadErr || !lead) {
         throw new Error('Lead not found');
       }
 
-      // Update enrichment status
-      const enrichment = await prisma.enrichment.update({
-        where: { leadId: job.leadId },
-        data: {
-          status: 'IN_PROGRESS',
-          startedAt: new Date(),
-        },
-      });
+      const { data: enrichmentRow, error: enrSelErr } = await db
+        .from('enrichments')
+        .select('id')
+        .eq('lead_id', job.leadId)
+        .single();
 
-      // Run AI research
+      if (enrSelErr || !enrichmentRow) {
+        throw new Error('Enrichment row not found');
+      }
+
+      await db
+        .from('enrichments')
+        .update({
+          status: 'IN_PROGRESS',
+          started_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', enrichmentRow.id);
+
       const researchResult = await this.agent.researchLead({
         id: lead.id,
-        firstName: lead.firstName || undefined,
-        lastName: lead.lastName || undefined,
-        fullName: lead.fullName || undefined,
+        firstName: lead.first_name || undefined,
+        lastName: lead.last_name || undefined,
+        fullName: lead.full_name || undefined,
         email: lead.email || undefined,
-        companyName: lead.companyName || undefined,
-        jobTitle: lead.jobTitle || undefined,
+        companyName: lead.company_name || undefined,
+        jobTitle: lead.job_title || undefined,
         industry: lead.industry || undefined,
-        linkedInUrl: lead.linkedInUrl || undefined,
+        linkedInUrl: lead.linkedin_url || undefined,
         website: lead.website || undefined,
         city: lead.city || undefined,
         state: lead.state || undefined,
-        nicheType: lead.companyName ? 'B2B' : 'B2C',
+        nicheType: lead.company_name ? 'B2B' : 'B2C',
       });
 
-      // Update enrichment with results
-      await prisma.enrichment.update({
-        where: { id: enrichment.id },
-        data: {
+      await db
+        .from('enrichments')
+        .update({
           status: 'COMPLETED',
-          completedAt: new Date(),
-          companyOverview: researchResult.companyOverview,
-          recentNews: researchResult.recentNews as any,
-          socialActivity: researchResult.socialActivity as any,
-          painPoints: researchResult.painPoints,
+          completed_at: new Date().toISOString(),
+          company_overview: researchResult.companyOverview,
+          recent_news: researchResult.recentNews as object,
+          social_activity: researchResult.socialActivity as object,
+          pain_points: researchResult.painPoints,
           opportunities: researchResult.opportunities,
-          triggerEvents: researchResult.triggerEvents as any,
-          personalizationHints: researchResult.personalizationHints as any,
-          conversationStarters: researchResult.conversationStarters,
-          confidenceScore: researchResult.confidenceScore,
-          sourcesUsed: researchResult.sourcesUsed as any,
-          researchQueries: researchResult.researchQueries,
-          processingTimeMs: Date.now() - startTime,
-        },
-      });
+          trigger_events: researchResult.triggerEvents as object,
+          personalization_hints: researchResult.personalizationHints as object,
+          conversation_starters: researchResult.conversationStarters,
+          confidence_score: researchResult.confidenceScore,
+          sources_used: researchResult.sourcesUsed as object,
+          research_queries: researchResult.researchQueries,
+          processing_time_ms: Date.now() - startTime,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', enrichmentRow.id);
 
-      // Update lead status
-      await prisma.lead.update({
-        where: { id: job.leadId },
-        data: { status: 'ENRICHED' },
-      });
+      await db
+        .from('leads')
+        .update({ status: 'ENRICHED', updated_at: new Date().toISOString() })
+        .eq('id', job.leadId);
 
-      // Update campaign progress
-      await prisma.campaign.update({
-        where: { id: job.campaignId },
-        data: { enrichedCount: { increment: 1 } },
-      });
+      const { data: campaign } = await db
+        .from('campaigns')
+        .select('enriched_count')
+        .eq('id', job.campaignId)
+        .single();
+
+      if (campaign) {
+        await db
+          .from('campaigns')
+          .update({
+            enriched_count: Number(campaign.enriched_count ?? 0) + 1,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', job.campaignId);
+      }
 
       return {
         success: true,
-        enrichmentId: enrichment.id,
+        enrichmentId: enrichmentRow.id,
         creditsUsed: 2,
       };
     } catch (error) {
       console.error('Enrichment failed:', error);
 
-      // Update enrichment status to failed
-      await prisma.enrichment.updateMany({
-        where: { leadId: job.leadId },
-        data: {
+      await db
+        .from('enrichments')
+        .update({
           status: 'FAILED',
-          completedAt: new Date(),
-        },
-      });
+          completed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('lead_id', job.leadId);
 
-      // Refund credits on failure
       await this.creditService.refundCredits({
         userId: job.userId,
         tenantId: job.tenantId,
@@ -248,44 +224,78 @@ export class EnrichmentService {
     }
   }
 
-  /**
-   * Get enrichment status for a lead
-   */
   async getEnrichmentStatus(leadId: string) {
-    return prisma.enrichment.findUnique({
-      where: { leadId },
-      include: {
-        lead: {
-          select: {
-            firstName: true,
-            lastName: true,
-            companyName: true,
-            email: true,
-          },
-        },
-      },
-    });
-  }
+    const db = requireAdmin();
+    const { data: enrichment, error } = await db
+      .from('enrichments')
+      .select('*')
+      .eq('lead_id', leadId)
+      .maybeSingle();
 
-  /**
-   * Get enrichment queue status for a campaign
-   */
-  async getCampaignEnrichmentStatus(campaignId: string) {
-    const [total, pending, inProgress, completed, failed] = await Promise.all([
-      prisma.enrichment.count({ where: { campaignId } }),
-      prisma.enrichment.count({ where: { campaignId, status: 'PENDING' } }),
-      prisma.enrichment.count({ where: { campaignId, status: 'IN_PROGRESS' } }),
-      prisma.enrichment.count({ where: { campaignId, status: 'COMPLETED' } }),
-      prisma.enrichment.count({ where: { campaignId, status: 'FAILED' } }),
-    ]);
+    if (error) throw error;
+    if (!enrichment) return null;
+
+    const { data: lead } = await db
+      .from('leads')
+      .select('first_name, last_name, company_name, email')
+      .eq('id', leadId)
+      .maybeSingle();
 
     return {
-      total,
+      ...enrichment,
+      lead: lead
+        ? {
+            firstName: lead.first_name,
+            lastName: lead.last_name,
+            companyName: lead.company_name,
+            email: lead.email,
+          }
+        : null,
+    };
+  }
+
+  async getCampaignEnrichmentStatus(campaignId: string) {
+    const db = requireAdmin();
+
+    const countFor = async (status: string) => {
+      const { count, error } = await db
+        .from('enrichments')
+        .select('*', { count: 'exact', head: true })
+        .eq('campaign_id', campaignId)
+        .eq('status', status);
+      if (error) throw error;
+      return count ?? 0;
+    };
+
+    const { count: total, error: totalErr } = await db
+      .from('enrichments')
+      .select('*', { count: 'exact', head: true })
+      .eq('campaign_id', campaignId);
+
+    if (totalErr) throw totalErr;
+
+    const { count: pendingQueued, error: pqErr } = await db
+      .from('enrichments')
+      .select('*', { count: 'exact', head: true })
+      .eq('campaign_id', campaignId)
+      .in('status', ['PENDING', 'QUEUED']);
+    if (pqErr) throw pqErr;
+
+    const [inProgress, completed, failed] = await Promise.all([
+      countFor('IN_PROGRESS'),
+      countFor('COMPLETED'),
+      countFor('FAILED'),
+    ]);
+    const pending = pendingQueued ?? 0;
+
+    const t = total ?? 0;
+    return {
+      total: t,
       pending,
       inProgress,
       completed,
       failed,
-      progress: total > 0 ? Math.round((completed / total) * 100) : 0,
+      progress: t > 0 ? Math.round((completed / t) * 100) : 0,
     };
   }
 }

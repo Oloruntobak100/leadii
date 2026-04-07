@@ -42,8 +42,7 @@ Leadii is an autonomous AI-driven lead generation, enrichment, and multi-channel
 | **Frontend** | Next.js 15 (App Router), React, TypeScript |
 | **Styling** | Tailwind CSS, shadcn/ui, Framer Motion |
 | **Backend** | Node.js, Next.js API Routes |
-| **Database** | Supabase (PostgreSQL), Prisma ORM |
-| **Queue** | BullMQ with Redis |
+| **Database** | Supabase (PostgreSQL); SQL migrations in repo `supabase/migrations/` |
 | **AI Engine** | LangChain, OpenAI GPT-4, Perplexity API |
 | **Messaging** | Twilio (SMS/WhatsApp), Resend (Email) |
 | **Payments** | Stripe (Subscriptions + Credits) |
@@ -53,8 +52,7 @@ Leadii is an autonomous AI-driven lead generation, enrichment, and multi-channel
 ### Prerequisites
 
 - Node.js 18+
-- PostgreSQL database (Supabase recommended)
-- Redis instance (Upstash recommended)
+- Supabase project (apply migrations from repo root `supabase/migrations/`)
 - API keys for OpenAI, Perplexity, Twilio, Resend, Stripe
 
 ### Installation
@@ -76,21 +74,11 @@ Leadii is an autonomous AI-driven lead generation, enrichment, and multi-channel
    # Edit .env.local with your API keys
    ```
 
-4. **Set up the database**
-   ```bash
-   npx prisma generate
-   npx prisma migrate dev
-   npm run db:seed
-   ```
+4. **Apply database schema** (Supabase SQL Editor or CLI) using `../supabase/migrations/*.sql` from the monorepo root.
 
 5. **Start the development server**
    ```bash
    npm run dev
-   ```
-
-6. **Start the background workers** (in a separate terminal)
-   ```bash
-   npm run workers:start
    ```
 
 Visit `http://localhost:3000` to see the application.
@@ -99,7 +87,6 @@ Visit `http://localhost:3000` to see the application.
 
 ```
 leadii/
-├── prisma/                 # Database schema and migrations
 ├── src/
 │   ├── app/               # Next.js App Router
 │   │   ├── (auth)/        # Auth pages (login, register)
@@ -113,8 +100,7 @@ leadii/
 │   │   ├── enrichment/    # AI enrichment service
 │   │   ├── credits/       # Credit system
 │   │   └── ...
-│   ├── workers/           # BullMQ background workers
-│   └── lib/               # Utility libraries
+│   └── lib/               # Utilities (e.g. Supabase admin client)
 └── ...
 ```
 

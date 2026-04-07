@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useForm } from 'react-hook-form';
+import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { motion } from 'framer-motion';
@@ -53,6 +53,7 @@ export function SignupForm() {
 
   const {
     register,
+    control,
     handleSubmit,
     formState: { errors },
     watch,
@@ -319,13 +320,22 @@ export function SignupForm() {
           )}
         </div>
 
-        {/* Terms Checkbox */}
+        {/* Terms Checkbox — Radix Checkbox uses onCheckedChange, not register() */}
         <div className="space-y-2">
           <div className="flex items-start gap-3">
-            <Checkbox
-              id="acceptTerms"
-              {...register('acceptTerms')}
-              className="mt-1 border-slate-600 data-[state=checked]:bg-cyan-500 data-[state=checked]:border-cyan-500"
+            <Controller
+              name="acceptTerms"
+              control={control}
+              render={({ field }) => (
+                <Checkbox
+                  id="acceptTerms"
+                  checked={field.value}
+                  onCheckedChange={(c) => field.onChange(c === true)}
+                  onBlur={field.onBlur}
+                  ref={field.ref}
+                  className="mt-1 border-slate-600 data-[state=checked]:bg-cyan-500 data-[state=checked]:border-cyan-500"
+                />
+              )}
             />
             <Label htmlFor="acceptTerms" className="text-sm text-slate-400 cursor-pointer">
               I agree to the{' '}
@@ -364,6 +374,7 @@ export function SignupForm() {
       <p className="text-center text-slate-400">
         Already have an account?{' '}
         <button
+          type="button"
           onClick={() => setCurrentPage('login')}
           className="text-cyan-400 hover:underline font-medium"
         >

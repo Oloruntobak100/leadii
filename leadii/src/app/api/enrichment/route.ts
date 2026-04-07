@@ -9,6 +9,7 @@ import { getServerSession } from 'next-auth';
 import { z } from 'zod';
 import { EnrichmentService } from '@/services/enrichment/enrichment.service';
 import { authOptions } from '@/lib/auth';
+import { isSupabaseAdminConfigured } from '@/lib/supabase/admin';
 
 const enrichmentService = new EnrichmentService();
 
@@ -24,6 +25,13 @@ const startEnrichmentSchema = z.object({
  */
 export async function POST(request: NextRequest) {
   try {
+    if (!isSupabaseAdminConfigured()) {
+      return NextResponse.json(
+        { error: 'Supabase is not configured on the server' },
+        { status: 503 }
+      );
+    }
+
     const session = await getServerSession(authOptions);
     if (!session?.user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -76,6 +84,13 @@ export async function POST(request: NextRequest) {
  */
 export async function GET(request: NextRequest) {
   try {
+    if (!isSupabaseAdminConfigured()) {
+      return NextResponse.json(
+        { error: 'Supabase is not configured on the server' },
+        { status: 503 }
+      );
+    }
+
     const session = await getServerSession(authOptions);
     if (!session?.user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
