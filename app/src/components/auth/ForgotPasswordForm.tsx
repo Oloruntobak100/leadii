@@ -18,6 +18,12 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAppStore } from '@/store/appStore';
 import { cn } from '@/lib/utils';
+import {
+  getSupabase,
+  isSupabaseConfigured,
+  supabaseKeyConfigError,
+} from '@/lib/supabase';
+import { toast } from 'sonner';
 
 const forgotPasswordSchema = z.object({
   email: z.string().email('Please enter a valid email address'),
@@ -38,14 +44,35 @@ export function ForgotPasswordForm() {
     resolver: zodResolver(forgotPasswordSchema),
   });
 
-  const onSubmit = async (_data: ForgotPasswordFormData) => {
+  const onSubmit = async (data: ForgotPasswordFormData) => {
     setIsLoading(true);
-    
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    
-    setIsLoading(false);
-    setIsSent(true);
+
+    try {
+      const supabase = getSupabase();
+      if (supabaseKeyConfigError) {
+        toast.error(supabaseKeyConfigError);
+        return;
+      }
+      if (!isSupabaseConfigured || !supabase) {
+        toast.error(
+          'Configure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY (anon) in app/.env or on Vercel.'
+        );
+        return;
+      }
+
+      const { error } = await supabase.auth.resetPasswordForEmail(data.email, {
+        redirectTo: `${window.location.origin}/`,
+      });
+
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+
+      setIsSent(true);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

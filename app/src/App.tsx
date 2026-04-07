@@ -17,9 +17,53 @@ import { Settings } from '@/sections/Settings';
 import { Admin } from '@/sections/Admin';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Toaster } from '@/components/ui/sonner';
+import { useEffect } from 'react';
+import { getSupabase, isSupabaseConfigured } from '@/lib/supabase';
+import { loadAppUserFromSession } from '@/lib/authSession';
 
 function App() {
-  const { currentPage, sidebarOpen, user } = useAppStore();
+  const { currentPage, sidebarOpen, user, setUser, setCurrentPage } = useAppStore();
+
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+    const supabase = getSupabase();
+    if (!supabase) return;
+
+    void (async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (session) {
+        try {
+          const appUser = await loadAppUserFromSession(supabase, session);
+          setUser(appUser);
+          setCurrentPage('dashboard');
+        } catch {
+          /* profile row may lag trigger; user can refresh */
+        }
+      }
+    })();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_IN' && session) {
+        try {
+          const appUser = await loadAppUserFromSession(supabase, session);
+          setUser(appUser);
+          setCurrentPage('dashboard');
+        } catch {
+          /* retry after trigger completes */
+        }
+      }
+      if (event === 'SIGNED_OUT') {
+        setUser(null);
+        setCurrentPage('landing');
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, [setUser, setCurrentPage]);
 
   // Render authentication pages
   if (currentPage === 'signup') {

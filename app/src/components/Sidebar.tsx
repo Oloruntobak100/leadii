@@ -1,4 +1,5 @@
 import { useAppStore } from '@/store/appStore';
+import { getSupabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard,
@@ -32,7 +33,9 @@ export function Sidebar() {
   const { user, currentPage, setCurrentPage, sidebarOpen, toggleSidebar, setUser } =
     useAppStore();
 
-  const handleSignOut = () => {
+  const handleSignOut = async () => {
+    const supabase = getSupabase();
+    if (supabase) await supabase.auth.signOut();
     setUser(null);
     setCurrentPage('landing');
   };

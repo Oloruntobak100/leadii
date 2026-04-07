@@ -21,6 +21,14 @@ import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useAppStore } from '@/store/appStore';
 import { cn } from '@/lib/utils';
+import {
+  getSupabase,
+  isSupabaseConfigured,
+  supabaseKeyConfigError,
+} from '@/lib/supabase';
+import { authUserExistsByEmail, isEmailAlreadyRegisteredError } from '@/lib/authEmail';
+import { loadAppUserFromSession } from '@/lib/authSession';
+import { toast } from 'sonner';
 
 const signupSchema = z.object({
   fullName: z.string().min(2, 'Name must be at least 2 characters'),
@@ -59,26 +67,89 @@ export function SignupForm() {
 
   const onSubmit = async (data: SignupFormData) => {
     setIsLoading(true);
-    
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    
-    // Set user and redirect to onboarding
-    setUser({
-      id: '1',
-      email: data.email,
-      name: data.fullName,
-      credits: 100,
-      subscription: 'free',
-    });
-    
-    setIsLoading(false);
-    setCurrentPage('onboarding');
+
+    try {
+      const supabase = getSupabase();
+      if (supabaseKeyConfigError) {
+        toast.error(supabaseKeyConfigError);
+        return;
+      }
+      if (!supabase) {
+        toast.error(
+          'Configure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY (anon key) in app/.env or on Vercel.'
+        );
+        return;
+      }
+
+      const { exists, errorMessage } = await authUserExistsByEmail(
+        supabase,
+        data.email
+      );
+      if (errorMessage) {
+        toast.error(errorMessage);
+        return;
+      }
+      if (exists) {
+        toast.error(
+          'This email already has an account. Sign in instead.'
+        );
+        return;
+      }
+
+      const { data: signUpData, error } = await supabase.auth.signUp({
+        email: data.email,
+        password: data.password,
+        options: {
+          data: { full_name: data.fullName, name: data.fullName },
+          emailRedirectTo: `${window.location.origin}/`,
+        },
+      });
+
+      if (error) {
+        if (isEmailAlreadyRegisteredError(error.message)) {
+          toast.error('This email already has an account. Sign in instead.');
+        } else {
+          toast.error(error.message);
+        }
+        return;
+      }
+
+      if (signUpData.session && signUpData.user) {
+        const appUser = await loadAppUserFromSession(supabase, signUpData.session);
+        setUser(appUser);
+        toast.success('Account created');
+        setCurrentPage('onboarding');
+        return;
+      }
+
+      toast.success(
+        'Check your email to confirm your account, then sign in.'
+      );
+      setCurrentPage('login');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Sign up failed');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleSocialSignup = (provider: string) => {
-    console.log(`Signing up with ${provider}`);
-    // Social auth implementation
+  const handleSocialSignup = async (provider: 'google' | 'linkedin_oidc') => {
+    const supabase = getSupabase();
+    if (supabaseKeyConfigError) {
+      toast.error(supabaseKeyConfigError);
+      return;
+    }
+    if (!isSupabaseConfigured || !supabase) {
+      toast.error(
+        'Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY (anon) on Vercel or in app/.env.'
+      );
+      return;
+    }
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider,
+      options: { redirectTo: window.location.origin },
+    });
+    if (error) toast.error(error.message);
   };
 
   return (
@@ -88,6 +159,7 @@ export function SignupForm() {
         <motion.button
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
+          type="button"
           onClick={() => handleSocialSignup('google')}
           className="flex items-center justify-center gap-2 p-3 rounded-xl bg-slate-900 border border-slate-700 text-white hover:bg-slate-800 hover:border-slate-600 transition-all"
         >
@@ -102,7 +174,8 @@ export function SignupForm() {
         <motion.button
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
-          onClick={() => handleSocialSignup('linkedin')}
+          type="button"
+          onClick={() => handleSocialSignup('linkedin_oidc')}
           className="flex items-center justify-center gap-2 p-3 rounded-xl bg-slate-900 border border-slate-700 text-white hover:bg-slate-800 hover:border-slate-600 transition-all"
         >
           <Linkedin className="w-5 h-5" />
