@@ -17,12 +17,39 @@ import { Settings } from '@/sections/Settings';
 import { Admin } from '@/sections/Admin';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Toaster } from '@/components/ui/sonner';
-import { useEffect } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { getSupabase, isSupabaseConfigured } from '@/lib/supabase';
 import { loadAppUserFromSession } from '@/lib/authSession';
 
+const SIGNUP_TITLE = 'Create your account';
+const SIGNUP_SUBTITLE = 'Start your 14-day free trial. No credit card required.';
+
 function App() {
   const { currentPage, sidebarOpen, user, setUser, setCurrentPage } = useAppStore();
+  const [signupTitle, setSignupTitle] = useState(SIGNUP_TITLE);
+  const [signupSubtitle, setSignupSubtitle] = useState(SIGNUP_SUBTITLE);
+
+  const handleSignupPhaseChange = useCallback(
+    (phase: 'form' | 'verify', context?: { email: string }) => {
+      if (phase === 'verify' && context?.email) {
+        setSignupTitle('Verify your email');
+        setSignupSubtitle(
+          `We sent a verification message to ${context.email}. Enter the code from that email below.`
+        );
+      } else {
+        setSignupTitle(SIGNUP_TITLE);
+        setSignupSubtitle(SIGNUP_SUBTITLE);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (currentPage === 'signup') {
+      setSignupTitle(SIGNUP_TITLE);
+      setSignupSubtitle(SIGNUP_SUBTITLE);
+    }
+  }, [currentPage]);
 
   useEffect(() => {
     if (!isSupabaseConfigured) return;
@@ -70,11 +97,8 @@ function App() {
     return (
       <div className="min-h-screen bg-slate-950">
         <NeuralNetworkBackground />
-        <AuthLayout
-          title="Create your account"
-          subtitle="Start your 14-day free trial. No credit card required."
-        >
-          <SignupForm />
+        <AuthLayout title={signupTitle} subtitle={signupSubtitle}>
+          <SignupForm onPhaseChange={handleSignupPhaseChange} />
         </AuthLayout>
         <Toaster />
       </div>

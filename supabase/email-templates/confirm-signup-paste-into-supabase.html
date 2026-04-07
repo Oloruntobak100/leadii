@@ -1,0 +1,35 @@
+<!--
+  Supabase → Authentication → Email templates → Confirm signup → Body (Source)
+  Copy everything BETWEEN the next line and the "END COPY" comment (no comments in Supabase).
+-->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#0f172a;margin:0;padding:24px 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <tr>
+    <td align="center">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background-color:#1e293b;border-radius:12px;border:1px solid #334155;">
+        <tr>
+          <td style="padding:24px 24px 8px;">
+            <p style="margin:0;font-size:12px;font-weight:600;color:#22d3ee;letter-spacing:0.08em;text-transform:uppercase;">Leadii</p>
+            <h2 style="margin:10px 0 0;font-size:20px;line-height:1.3;color:#f8fafc;">Almost there — confirm your email</h2>
+            <p style="margin:14px 0 0;font-size:15px;line-height:1.55;color:#94a3b8;">
+              Thanks for signing up. Please confirm
+              <strong style="color:#e2e8f0;">{{ .Email }}</strong>
+              by opening the Leadii app and pasting the verification code below.
+            </p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:8px 24px 28px;">
+            <p style="margin:0 0 8px;font-size:12px;font-weight:600;color:#cbd5e1;text-transform:uppercase;letter-spacing:0.04em;">Your verification code</p>
+            <div style="background:#0f172a;border:1px solid #475569;border-radius:10px;padding:14px 16px;word-break:break-all;">
+              <span style="font-size:17px;line-height:1.45;color:#2dd4bf;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;">{{ .Token }}</span>
+            </div>
+            <p style="margin:10px 0 0;font-size:12px;line-height:1.45;color:#64748b;">
+              Copy the entire code above (length may vary). If you didn’t create an account, you can ignore this email.
+            </p>
+          </td>
+        </tr>
+      </table>
+      <p style="margin:20px 0 0;font-size:11px;color:#64748b;">Leadii · AI-powered lead intelligence</p>
+    </td>
+  </tr>
+</table>
