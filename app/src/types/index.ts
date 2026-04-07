@@ -5,6 +5,12 @@ export interface User {
   avatarUrl?: string;
   credits: number;
   subscription: 'free' | 'starter' | 'professional' | 'enterprise';
+  /** Mirrors public.profiles.onboarding_completed */
+  onboardingCompleted: boolean;
+  /** public.profiles.onboarding_industry slug */
+  onboardingIndustry: string | null;
+  /** public.profiles.default_outreach_channel slug */
+  defaultOutreachChannel: string | null;
 }
 
 export interface Campaign {

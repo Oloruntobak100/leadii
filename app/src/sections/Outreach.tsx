@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAppStore } from '@/store/appStore';
 import { mockLeads, mockTemplates } from '@/data/mockData';
 import { 
@@ -28,8 +28,14 @@ const channels = [
 ];
 
 export function Outreach() {
-  const { leads } = useAppStore();
+  const { leads, user } = useAppStore();
   const [selectedChannel, setSelectedChannel] = useState('email');
+
+  useEffect(() => {
+    const pref = user?.defaultOutreachChannel;
+    if (!pref) return;
+    if (channels.some((c) => c.id === pref)) setSelectedChannel(pref);
+  }, [user?.defaultOutreachChannel]);
   const [selectedTemplate, setSelectedTemplate] = useState(mockTemplates[0]);
   const [message, setMessage] = useState(mockTemplates[0].body);
   const [subject, setSubject] = useState(mockTemplates[0].subject || '');

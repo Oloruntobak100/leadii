@@ -27,6 +27,7 @@ import {
 } from '@/lib/supabase';
 import { authUserExistsByEmail } from '@/lib/authEmail';
 import { loadAppUserFromSession } from '@/lib/authSession';
+import { getPostAuthPage } from '@/lib/authRouting';
 import { toast } from 'sonner';
 
 const loginSchema = z.object({
@@ -107,7 +108,7 @@ export function LoginForm() {
       const appUser = await loadAppUserFromSession(supabase, signInData.session);
       setUser(appUser);
       toast.success('Welcome back');
-      setCurrentPage('dashboard');
+      setCurrentPage(getPostAuthPage(appUser));
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Sign in failed');
     } finally {

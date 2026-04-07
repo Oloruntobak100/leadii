@@ -2,47 +2,24 @@
 
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  Send, 
-  CheckCircle2, 
+import {
+  Send,
+  CheckCircle2,
   ArrowRight,
   Sparkles,
-  Mail,
-  MessageSquare,
-  Linkedin,
-  Smartphone,
   Target,
   Zap,
-  TrendingUp,
-  Briefcase,
-  Home,
-  Stethoscope,
-  ShoppingBag,
-  Code,
-  GraduationCap,
-  Scale
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAppStore } from '@/store/appStore';
 import { cn } from '@/lib/utils';
-
-const industries = [
-  { id: 'realestate', name: 'Real Estate', icon: Home },
-  { id: 'saas', name: 'SaaS / Technology', icon: Code },
-  { id: 'healthcare', name: 'Healthcare', icon: Stethoscope },
-  { id: 'ecommerce', name: 'E-commerce', icon: ShoppingBag },
-  { id: 'finance', name: 'Finance / Banking', icon: TrendingUp },
-  { id: 'consulting', name: 'Consulting', icon: Briefcase },
-  { id: 'education', name: 'Education', icon: GraduationCap },
-  { id: 'legal', name: 'Legal Services', icon: Scale },
-];
-
-const channels = [
-  { id: 'email', name: 'Email', icon: Mail, description: 'Professional & scalable' },
-  { id: 'linkedin', name: 'LinkedIn', icon: Linkedin, description: 'B2B focused' },
-  { id: 'whatsapp', name: 'WhatsApp', icon: MessageSquare, description: 'High engagement' },
-  { id: 'sms', name: 'SMS', icon: Smartphone, description: 'Immediate reach' },
-];
+import {
+  ONBOARDING_INDUSTRIES,
+  ONBOARDING_CHANNELS,
+} from '@/data/onboardingOptions';
+import { getSupabase, supabaseKeyConfigError } from '@/lib/supabase';
+import { loadAppUserFromSession } from '@/lib/authSession';
+import { toast } from 'sonner';
 
 export function Onboarding() {
   const { setCurrentPage, user, setUser } = useAppStore();
@@ -54,21 +31,80 @@ export function Onboarding() {
   const totalSteps = 3;
   const progress = (step / totalSteps) * 100;
 
+  async function persistOnboarding(opts: {
+    industry: string | null;
+    channel: string | null;
+    successMessage?: string;
+  }) {
+    if (!user?.id) {
+      toast.error('You need to be signed in to finish onboarding.');
+      return false;
+    }
+
+    const supabase = getSupabase();
+    if (supabaseKeyConfigError) {
+      toast.error(supabaseKeyConfigError);
+      return false;
+    }
+    if (!supabase) {
+      toast.error('Supabase is not configured.');
+      return false;
+    }
+
+    const { error } = await supabase
+      .from('profiles')
+      .update({
+        onboarding_industry: opts.industry,
+        default_outreach_channel: opts.channel,
+        onboarding_completed: true,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', user.id);
+
+    if (error) {
+      console.error(error);
+      toast.error(error.message || 'Could not save your preferences.');
+      return false;
+    }
+
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (session) {
+      const appUser = await loadAppUserFromSession(supabase, session);
+      setUser(appUser);
+    }
+
+    if (opts.successMessage) toast.success(opts.successMessage);
+    return true;
+  }
+
   const handleComplete = async () => {
     setIsCompleting(true);
-    
-    // Simulate API call to save preferences
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    
-    // Update user with preferences
-    if (user) {
-      setUser({
-        ...user,
+    try {
+      const ok = await persistOnboarding({
+        industry: selectedIndustry || null,
+        channel: selectedChannel || null,
+        successMessage: 'You’re all set — opening your dashboard.',
       });
+      if (ok) setCurrentPage('dashboard');
+    } finally {
+      setIsCompleting(false);
     }
-    
-    setIsCompleting(false);
-    setCurrentPage('dashboard');
+  };
+
+  const handleSkip = async () => {
+    setIsCompleting(true);
+    try {
+      const ok = await persistOnboarding({
+        industry: null,
+        channel: null,
+        successMessage: 'You can update industry and channel anytime in Settings.',
+      });
+      if (ok) setCurrentPage('dashboard');
+    } finally {
+      setIsCompleting(false);
+    }
   };
 
   const renderStep = () => {
@@ -92,32 +128,39 @@ export function Onboarding() {
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              {industries.map((industry) => {
+              {ONBOARDING_INDUSTRIES.map((industry) => {
                 const Icon = industry.icon;
                 return (
                   <button
                     key={industry.id}
+                    type="button"
                     onClick={() => setSelectedIndustry(industry.id)}
                     className={cn(
-                      "flex items-center gap-3 p-4 rounded-xl border transition-all text-left",
+                      'flex items-center gap-3 p-4 rounded-xl border transition-all text-left',
                       selectedIndustry === industry.id
-                        ? "bg-cyan-500/10 border-cyan-500/50"
-                        : "bg-slate-900/50 border-slate-700 hover:border-slate-600"
+                        ? 'bg-cyan-500/10 border-cyan-500/50'
+                        : 'bg-slate-900/50 border-slate-700 hover:border-slate-600'
                     )}
                   >
-                    <div className={cn(
-                      "w-10 h-10 rounded-lg flex items-center justify-center",
-                      selectedIndustry === industry.id ? "bg-cyan-500/20" : "bg-slate-800"
-                    )}>
-                      <Icon className={cn(
-                        "w-5 h-5",
-                        selectedIndustry === industry.id ? "text-cyan-400" : "text-slate-400"
-                      )} />
+                    <div
+                      className={cn(
+                        'w-10 h-10 rounded-lg flex items-center justify-center',
+                        selectedIndustry === industry.id ? 'bg-cyan-500/20' : 'bg-slate-800'
+                      )}
+                    >
+                      <Icon
+                        className={cn(
+                          'w-5 h-5',
+                          selectedIndustry === industry.id ? 'text-cyan-400' : 'text-slate-400'
+                        )}
+                      />
                     </div>
-                    <span className={cn(
-                      "font-medium",
-                      selectedIndustry === industry.id ? "text-white" : "text-slate-300"
-                    )}>
+                    <span
+                      className={cn(
+                        'font-medium',
+                        selectedIndustry === industry.id ? 'text-white' : 'text-slate-300'
+                      )}
+                    >
                       {industry.name}
                     </span>
                     {selectedIndustry === industry.id && (
@@ -144,38 +187,45 @@ export function Onboarding() {
               </div>
               <h2 className="text-2xl font-bold text-white mb-2">How do you prefer to reach out?</h2>
               <p className="text-slate-400">
-                Select your primary outreach channel. You can always change this later.
+                Select your primary outreach channel. You can always change this later in settings.
               </p>
             </div>
 
             <div className="space-y-3">
-              {channels.map((channel) => {
+              {ONBOARDING_CHANNELS.map((channel) => {
                 const Icon = channel.icon;
                 return (
                   <button
                     key={channel.id}
+                    type="button"
                     onClick={() => setSelectedChannel(channel.id)}
                     className={cn(
-                      "w-full flex items-center gap-4 p-4 rounded-xl border transition-all text-left",
+                      'w-full flex items-center gap-4 p-4 rounded-xl border transition-all text-left',
                       selectedChannel === channel.id
-                        ? "bg-cyan-500/10 border-cyan-500/50"
-                        : "bg-slate-900/50 border-slate-700 hover:border-slate-600"
+                        ? 'bg-cyan-500/10 border-cyan-500/50'
+                        : 'bg-slate-900/50 border-slate-700 hover:border-slate-600'
                     )}
                   >
-                    <div className={cn(
-                      "w-12 h-12 rounded-xl flex items-center justify-center",
-                      selectedChannel === channel.id ? "bg-cyan-500/20" : "bg-slate-800"
-                    )}>
-                      <Icon className={cn(
-                        "w-6 h-6",
-                        selectedChannel === channel.id ? "text-cyan-400" : "text-slate-400"
-                      )} />
+                    <div
+                      className={cn(
+                        'w-12 h-12 rounded-xl flex items-center justify-center',
+                        selectedChannel === channel.id ? 'bg-cyan-500/20' : 'bg-slate-800'
+                      )}
+                    >
+                      <Icon
+                        className={cn(
+                          'w-6 h-6',
+                          selectedChannel === channel.id ? 'text-cyan-400' : 'text-slate-400'
+                        )}
+                      />
                     </div>
                     <div className="flex-1">
-                      <span className={cn(
-                        "font-medium block",
-                        selectedChannel === channel.id ? "text-white" : "text-slate-300"
-                      )}>
+                      <span
+                        className={cn(
+                          'font-medium block',
+                          selectedChannel === channel.id ? 'text-white' : 'text-slate-300'
+                        )}
+                      >
                         {channel.name}
                       </span>
                       <span className="text-sm text-slate-500">{channel.description}</span>
@@ -203,9 +253,7 @@ export function Onboarding() {
                 <Target className="w-8 h-8 text-white" />
               </div>
               <h2 className="text-2xl font-bold text-white mb-2">You're all set!</h2>
-              <p className="text-slate-400">
-                Here's what Leadii will do for you:
-              </p>
+              <p className="text-slate-400">Here's what Leadii will do for you:</p>
             </div>
 
             <div className="space-y-4">
@@ -238,11 +286,13 @@ export function Onboarding() {
                     transition={{ delay: i * 0.1 }}
                     className="flex items-start gap-4 p-4 rounded-xl bg-slate-900/50 border border-slate-800"
                   >
-                    <div className={cn(
-                      "w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0",
-                      `bg-${feature.color}-500/20`
-                    )}>
-                      <Icon className={cn("w-5 h-5", `text-${feature.color}-400`)} />
+                    <div
+                      className={cn(
+                        'w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0',
+                        `bg-${feature.color}-500/20`
+                      )}
+                    >
+                      <Icon className={cn('w-5 h-5', `text-${feature.color}-400`)} />
                     </div>
                     <div>
                       <h4 className="font-medium text-white">{feature.title}</h4>
@@ -256,17 +306,18 @@ export function Onboarding() {
             <div className="p-4 rounded-xl bg-cyan-500/10 border border-cyan-500/30">
               <p className="text-sm text-cyan-400 text-center">
                 <Sparkles className="w-4 h-4 inline mr-1" />
-                You received <strong>100 free credits</strong> to get started!
+                You have <strong>{user?.credits ?? 0}</strong> credits on your account to get started.
               </p>
             </div>
           </motion.div>
         );
+      default:
+        return null;
     }
   };
 
   return (
     <div className="min-h-screen flex items-center justify-center px-6 relative overflow-hidden">
-      {/* Background */}
       <div className="absolute inset-0 bg-slate-950" />
       <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-cyan-500/10 rounded-full blur-[120px]" />
       <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-indigo-500/10 rounded-full blur-[120px]" />
@@ -276,10 +327,11 @@ export function Onboarding() {
         animate={{ opacity: 1, y: 0 }}
         className="relative z-10 w-full max-w-lg"
       >
-        {/* Progress Bar */}
         <div className="mb-8">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-sm text-slate-400">Step {step} of {totalSteps}</span>
+            <span className="text-sm text-slate-400">
+              Step {step} of {totalSteps}
+            </span>
             <span className="text-sm text-cyan-400">{Math.round(progress)}%</span>
           </div>
           <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
@@ -292,17 +344,14 @@ export function Onboarding() {
           </div>
         </div>
 
-        {/* Card */}
         <div className="glass-card rounded-2xl p-8">
-          <AnimatePresence mode="wait">
-            {renderStep()}
-          </AnimatePresence>
+          <AnimatePresence mode="wait">{renderStep()}</AnimatePresence>
 
-          {/* Navigation */}
           <div className="flex items-center justify-between mt-8 pt-6 border-t border-slate-800">
             {step > 1 ? (
               <Button
                 variant="outline"
+                type="button"
                 onClick={() => setStep(step - 1)}
                 className="border-slate-700 text-slate-300"
               >
@@ -314,10 +363,10 @@ export function Onboarding() {
 
             {step < totalSteps ? (
               <Button
+                type="button"
                 onClick={() => setStep(step + 1)}
                 disabled={
-                  (step === 1 && !selectedIndustry) ||
-                  (step === 2 && !selectedChannel)
+                  (step === 1 && !selectedIndustry) || (step === 2 && !selectedChannel)
                 }
                 className="btn-neon"
               >
@@ -326,6 +375,7 @@ export function Onboarding() {
               </Button>
             ) : (
               <Button
+                type="button"
                 onClick={handleComplete}
                 disabled={isCompleting}
                 className="btn-neon"
@@ -333,7 +383,7 @@ export function Onboarding() {
                 {isCompleting ? (
                   <>
                     <div className="w-4 h-4 mr-2 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    Setting up...
+                    Saving…
                   </>
                 ) : (
                   <>
@@ -346,11 +396,12 @@ export function Onboarding() {
           </div>
         </div>
 
-        {/* Skip Option */}
         {step < totalSteps && (
           <button
-            onClick={() => setCurrentPage('dashboard')}
-            className="block mx-auto mt-6 text-sm text-slate-500 hover:text-slate-300 transition-colors"
+            type="button"
+            onClick={() => void handleSkip()}
+            disabled={isCompleting}
+            className="block mx-auto mt-6 text-sm text-slate-500 hover:text-slate-300 transition-colors disabled:opacity-50"
           >
             Skip for now
           </button>

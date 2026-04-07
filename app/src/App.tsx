@@ -20,6 +20,7 @@ import { Toaster } from '@/components/ui/sonner';
 import { useEffect, useState, useCallback } from 'react';
 import { getSupabase, isSupabaseConfigured } from '@/lib/supabase';
 import { loadAppUserFromSession } from '@/lib/authSession';
+import { getPostAuthPage } from '@/lib/authRouting';
 
 const SIGNUP_TITLE = 'Create your account';
 const SIGNUP_SUBTITLE = 'Start your 14-day free trial. No credit card required.';
@@ -64,7 +65,7 @@ function App() {
         try {
           const appUser = await loadAppUserFromSession(supabase, session);
           setUser(appUser);
-          setCurrentPage('dashboard');
+          setCurrentPage(getPostAuthPage(appUser));
         } catch {
           /* profile row may lag trigger; user can refresh */
         }
@@ -78,7 +79,7 @@ function App() {
         try {
           const appUser = await loadAppUserFromSession(supabase, session);
           setUser(appUser);
-          setCurrentPage('dashboard');
+          setCurrentPage(getPostAuthPage(appUser));
         } catch {
           /* retry after trigger completes */
         }

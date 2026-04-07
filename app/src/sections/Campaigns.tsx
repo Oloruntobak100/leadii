@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAppStore } from '@/store/appStore';
 import { mockCampaigns } from '@/data/mockData';
 import { 
@@ -21,6 +21,7 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
+import { campaignIndustryFromOnboardingSlug } from '@/data/onboardingOptions';
 
 const dataSources = [
   { id: 'google', name: 'Google Search', icon: '🔍' },
@@ -36,7 +37,7 @@ const industries = [
 ];
 
 export function Campaigns() {
-  const { campaigns, addCampaign, setCurrentPage } = useAppStore();
+  const { campaigns, addCampaign, setCurrentPage, user } = useAppStore();
   const [showWizard, setShowWizard] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [wizardStep, setWizardStep] = useState(1);
@@ -51,6 +52,13 @@ export function Campaigns() {
     keywords: '',
     sources: [] as string[],
   });
+
+  useEffect(() => {
+    if (!showWizard) return;
+    const fromProfile = campaignIndustryFromOnboardingSlug(user?.onboardingIndustry);
+    if (!fromProfile) return;
+    setNewCampaign((nc) => (nc.industry ? nc : { ...nc, industry: fromProfile }));
+  }, [showWizard, user?.onboardingIndustry]);
 
   const displayCampaigns = campaigns.length > 0 ? campaigns : mockCampaigns;
   

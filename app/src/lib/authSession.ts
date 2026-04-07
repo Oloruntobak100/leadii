@@ -28,6 +28,9 @@ export async function loadAppUserFromSession(
       `
       full_name,
       subscription_tier,
+      onboarding_completed,
+      onboarding_industry,
+      default_outreach_channel,
       credit_balances ( balance )
     `
     )
@@ -50,5 +53,10 @@ export async function loadAppUserFromSession(
     name: profile?.full_name?.trim() || email.split('@')[0] || 'User',
     credits,
     subscription: mapSubscriptionTier(profile?.subscription_tier),
+    onboardingCompleted: Boolean(profile?.onboarding_completed),
+    onboardingIndustry:
+      (profile?.onboarding_industry as string | null | undefined) ?? null,
+    defaultOutreachChannel:
+      (profile?.default_outreach_channel as string | null | undefined) ?? null,
   };
 }

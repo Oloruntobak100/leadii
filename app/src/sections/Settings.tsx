@@ -20,6 +20,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
+import { channelLabel, industryLabel } from '@/data/onboardingOptions';
 
 const integrations = [
   { id: 'linkedin', name: 'LinkedIn', icon: '💼', connected: true, color: 'blue' },
@@ -92,7 +93,7 @@ export function Settings() {
               <CardContent className="space-y-6">
                 <div className="flex items-center gap-6">
                   <div className="w-20 h-20 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white text-2xl font-medium">
-                    {user?.name.charAt(0)}
+                    {user?.name?.charAt(0) ?? '?'}
                   </div>
                   <div>
                     <Button variant="outline" className="border-slate-700 text-slate-300">
@@ -128,6 +129,22 @@ export function Settings() {
                     <Label className="text-slate-400">Job Title</Label>
                     <Input 
                       placeholder="Your job title"
+                      className="bg-slate-900/50 border-slate-700 text-white"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-slate-400">Industry (onboarding)</Label>
+                    <Input
+                      readOnly
+                      value={industryLabel(user?.onboardingIndustry)}
+                      className="bg-slate-900/50 border-slate-700 text-white"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-slate-400">Default outreach channel</Label>
+                    <Input
+                      readOnly
+                      value={channelLabel(user?.defaultOutreachChannel)}
                       className="bg-slate-900/50 border-slate-700 text-white"
                     />
                   </div>
